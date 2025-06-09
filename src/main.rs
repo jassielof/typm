@@ -8,6 +8,7 @@ use core::{compile_template, copy_files, generate_thumbnail, validate_package_na
 use serde::Deserialize;
 use std::{
     fs,
+    io::Write, // Added for stdout().flush()
     path::{Path, PathBuf},
     process::Command,
 };
@@ -128,8 +129,89 @@ fn handle_build_command(args: BuildArgs) -> Result<()> {
 }
 
 fn parse_git_source(git_source_url: &str) -> Result<GitSourceDescriptor> {
+    // Try parsing as an alias first: provider_alias/user_or_org/repo_name[/path/in/repo]
+    let alias_parts: Vec<&str> = git_source_url.splitn(3, '/').collect();
+
+    if alias_parts.len() >= 2 {
+        // At least "gh/user" or "gh/user/repo"
+        let provider_alias = alias_parts[0];
+        let user_or_org_alias = alias_parts[1];
+        // repo_and_path_alias will be "repo_name" or "repo_name/actual/path" or "" if only "gh/user" was given
+        let repo_and_path_alias = if alias_parts.len() == 3 {
+            alias_parts[2]
+        } else {
+            // If only "gh/user" is provided, it's likely an incomplete alias for a repo.
+            // We need at least "gh/user/repo" for a valid repo.
+            // So if repo_and_path_alias would be empty, this isn't a valid repo alias.
+            if user_or_org_alias.contains('/') {
+                // User likely typed full URL by mistake
+                "" // Fall through to URL parsing
+            } else {
+                // Treat as if repo name is missing, let it fail or be handled by URL parser
+                // For a simple alias, we expect at least gh/user/repo
+                if alias_parts.len() < 3 || alias_parts[2].is_empty() {
+                    // This means we have "gh/user" or "gh/user/" which is not enough for a repo.
+                    // Let it fall through to the full URL parser.
+                }
+                alias_parts.get(2).copied().unwrap_or("")
+            }
+        };
+        // Determine the resolved host based on the provider alias.
+        // The repo_url_template is removed from here as it will be handled directly in the format! call.
+        let resolved_host = match provider_alias.to_lowercase().as_str() {
+            "gh" | "github" => "github.com",
+            "gl" | "gitlab" => "gitlab.com",
+            "bb" | "bitbucket" => "bitbucket.org",
+            _ => "", // Not a recognized alias prefix
+        };
+
+        if !resolved_host.is_empty()
+            && !user_or_org_alias.is_empty()
+            && !repo_and_path_alias.is_empty()
+        {
+            let sub_parts: Vec<&str> = repo_and_path_alias.splitn(2, '/').collect();
+            let repo_name_alias = sub_parts[0];
+            let path_in_repo_str = if sub_parts.len() > 1 {
+                sub_parts[1]
+            } else {
+                ""
+            };
+
+            if !repo_name_alias.is_empty() {
+                // Construct repo_url_for_clone using a match statement to ensure
+                // format! receives a string literal.
+                let repo_url_for_clone = match resolved_host {
+                    "github.com" => format!(
+                        "https://github.com/{}/{}.git",
+                        user_or_org_alias, repo_name_alias
+                    ),
+                    "gitlab.com" => format!(
+                        "https://gitlab.com/{}/{}.git",
+                        user_or_org_alias, repo_name_alias
+                    ),
+                    "bitbucket.org" => format!(
+                        "https://bitbucket.org/{}/{}.git",
+                        user_or_org_alias, repo_name_alias
+                    ),
+                    // This case should be unreachable due to the `!resolved_host.is_empty()` check above,
+                    // which ensures resolved_host is one of the known, non-empty strings.
+                    _ => unreachable!("Invalid resolved_host after checks"),
+                };
+
+                return Ok(GitSourceDescriptor {
+                    repo_url_for_clone,
+                    git_ref: None,
+                    path_in_repo: PathBuf::from(path_in_repo_str),
+                    provider_host: resolved_host.to_string(),
+                    user_or_org: user_or_org_alias.to_string(),
+                });
+            }
+        }
+    }
+
+    // Fallback to full URL parsing
     let parsed_url = url::Url::parse(git_source_url)
-        .with_context(|| format!("Invalid Git source URL: {}", git_source_url))?;
+        .with_context(|| format!("Invalid Git source URL or alias: {}", git_source_url))?;
 
     let host = parsed_url
         .host_str()
@@ -218,7 +300,7 @@ fn parse_git_source(git_source_url: &str) -> Result<GitSourceDescriptor> {
         }
     }
     Err(anyhow!(
-        "Unsupported Git URL format or provider: {}",
+        "Unsupported Git URL format or provider (or invalid alias): {}",
         git_source_url
     ))
 }
@@ -295,12 +377,94 @@ fn handle_install_command(args: InstallArgs) -> Result<()> {
     }
     println!("Clone successful.");
 
-    let package_source_path = clone_target_dir.join(&source_desc.path_in_repo);
-    let toml_in_cloned_path = package_source_path.join("typst.toml");
+    // Initial package_source_path based on URL or alias path component
+    let mut package_source_path = clone_target_dir.join(&source_desc.path_in_repo);
+    let mut toml_in_cloned_path = package_source_path.join("typst.toml");
 
     if !toml_in_cloned_path.exists() {
+        println!(
+            "typst.toml not found at {}. Searching recursively in {}...",
+            toml_in_cloned_path.display(), // This path might be .../path/in/repo/typst.toml
+            package_source_path.display()  // Search starts from .../path/in/repo
+        );
+
+        let mut found_tomls: Vec<PathBuf> = Vec::new();
+        // Search relative to the initially determined package_source_path
+        for entry in walkdir::WalkDir::new(&package_source_path)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| !e.file_type().is_dir() && e.file_name().to_string_lossy() == "typst.toml")
+        {
+            found_tomls.push(entry.path().to_path_buf());
+        }
+
+        if found_tomls.is_empty() {
+            return Err(anyhow!(
+                "No typst.toml found directly or recursively in {}",
+                // If path_in_repo was specified, search was within that. Otherwise, repo root.
+                clone_target_dir.join(&source_desc.path_in_repo).display()
+            ));
+        } else if found_tomls.len() == 1 {
+            toml_in_cloned_path = found_tomls.remove(0);
+            package_source_path = toml_in_cloned_path
+                .parent()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Could not get parent directory of found typst.toml: {}",
+                        toml_in_cloned_path.display()
+                    )
+                })?
+                .to_path_buf();
+            println!("Found one typst.toml at: {}", toml_in_cloned_path.display());
+        } else {
+            println!("\nMultiple typst.toml files found. Please choose one to install:");
+            for (i, path) in found_tomls.iter().enumerate() {
+                // Display path relative to the cloned repository root for clarity
+                let display_path = path.strip_prefix(&clone_target_dir).unwrap_or(path);
+                println!("  {}: {}", i + 1, display_path.display());
+            }
+
+            loop {
+                print!("Enter number (1-{}): ", found_tomls.len());
+                std::io::stdout()
+                    .flush()
+                    .context("Failed to flush stdout")?;
+                let mut input = String::new();
+                std::io::stdin()
+                    .read_line(&mut input)
+                    .context("Failed to read user input")?;
+                match input.trim().parse::<usize>() {
+                    Ok(num) if num > 0 && num <= found_tomls.len() => {
+                        // .remove() is not ideal here as it shifts indices if we were to re-prompt
+                        // .get() and .clone() is safer if we needed to loop more complexly
+                        toml_in_cloned_path = found_tomls[num - 1].clone(); // Use selected path
+                        package_source_path = toml_in_cloned_path
+                            .parent()
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "Could not get parent directory of chosen typst.toml: {}",
+                                    toml_in_cloned_path.display()
+                                )
+                            })?
+                            .to_path_buf();
+                        println!("Selected: {}", toml_in_cloned_path.display());
+                        break;
+                    }
+                    _ => {
+                        println!(
+                            "Invalid input. Please enter a number between 1 and {}.",
+                            found_tomls.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if !toml_in_cloned_path.exists() {
+        // Should be redundant now but good final check
         return Err(anyhow!(
-            "typst.toml not found at {}",
+            "typst.toml still not found at determined path: {}", // This should ideally not be reached if logic above is correct
             toml_in_cloned_path.display()
         ));
     }
