@@ -1,18 +1,19 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSetBuilder};
 use regex::Regex;
-use std::{
-    fs,
-    path::Path,
-    process::Command,
-};
+use std::{fs, path::Path, process::Command};
 use walkdir::WalkDir;
 
 pub fn validate_package_name(package_name: &str, toml_dir: &Path) -> Result<()> {
     let parent_dir_name = toml_dir
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| anyhow!("Could not determine parent directory name for: {}", toml_dir.display()))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "Could not determine parent directory name for: {}",
+                toml_dir.display()
+            )
+        })?;
 
     if package_name != parent_dir_name {
         return Err(anyhow!(
@@ -34,7 +35,10 @@ pub fn compile_template(
         .join(template_path_str)
         .join(template_entrypoint_str);
     let project_root = toml_dir.parent().ok_or_else(|| {
-        anyhow!("Failed to get parent directory of TOML file: {}", toml_dir.display())
+        anyhow!(
+            "Failed to get parent directory of TOML file: {}",
+            toml_dir.display()
+        )
     })?;
 
     let output = Command::new("typst")
@@ -75,14 +79,23 @@ pub fn generate_thumbnail(
         .join(template_entrypoint_str);
     let thumbnail_full_path = Path::new(package_name).join(thumbnail_path_str);
     let project_root = toml_dir.parent().ok_or_else(|| {
-        anyhow!("Failed to get parent directory of TOML file: {}", toml_dir.display())
+        anyhow!(
+            "Failed to get parent directory of TOML file: {}",
+            toml_dir.display()
+        )
     })?;
 
     let template_arg = template_full_path.to_str().ok_or_else(|| {
-        anyhow!("Template path is not valid UTF-8: {}", template_full_path.display())
+        anyhow!(
+            "Template path is not valid UTF-8: {}",
+            template_full_path.display()
+        )
     })?;
     let thumbnail_arg = thumbnail_full_path.to_str().ok_or_else(|| {
-        anyhow!("Thumbnail path is not valid UTF-8: {}", thumbnail_full_path.display())
+        anyhow!(
+            "Thumbnail path is not valid UTF-8: {}",
+            thumbnail_full_path.display()
+        )
     })?;
 
     let output = Command::new("typst")
@@ -123,20 +136,25 @@ pub fn copy_files(
     source_dir: &Path,
     dest_dir: &Path,
     exclude_patterns: &[String],
-    package_name: &str,
+    package_import_path: &str, // Renamed for clarity, expects "namespace/name" or "preview/name"
     package_version: &str,
     package_entrypoint: &str,
 ) -> Result<()> {
-    fs::create_dir_all(dest_dir)
-        .with_context(|| format!("Failed to create destination directory: {}", dest_dir.display()))?;
+    fs::create_dir_all(dest_dir).with_context(|| {
+        format!(
+            "Failed to create destination directory: {}",
+            dest_dir.display()
+        )
+    })?;
 
     let mut glob_builder = GlobSetBuilder::new();
     for pattern in exclude_patterns {
-        let glob = Glob::new(pattern)
-            .with_context(|| format!("Invalid glob pattern: '{}'", pattern))?;
+        let glob =
+            Glob::new(pattern).with_context(|| format!("Invalid glob pattern: '{}'", pattern))?;
         glob_builder.add(glob);
     }
-    let glob_set = glob_builder.build()
+    let glob_set = glob_builder
+        .build()
         .with_context(|| "Failed to build glob set from exclude patterns")?;
 
     let directory_patterns: Vec<String> = exclude_patterns
@@ -159,20 +177,29 @@ pub fn copy_files(
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow!("Invalid entrypoint name: {}", package_entrypoint))?;
 
+    // package_import_path is "namespace/name" or "preview/name"
+    // The full import string for rewriting, e.g., "@gh-user/pkg:1.0.0" or "@preview/pkg:1.0.0"
+    let full_package_import_str = format!("@{}:{}", package_import_path, package_version);
+
     let import_re = Regex::new(&format!(
-        r#"#import\s+"((?:\.\./)+{})((?::\s*[^"]*)?)""#,
+        r#"#import\s+"((?:\.\./)+{})((?::\s*[^"]*)?)""#, // Matches ../../entrypoint.typ
         regex::escape(entrypoint_name)
     ))?;
-    let package_import_str = format!("@preview/{}:{}", package_name, package_version);
 
     for entry in WalkDir::new(source_dir) {
-        let entry = entry.with_context(|| format!("Error walking directory: {}", source_dir.display()))?;
+        let entry =
+            entry.with_context(|| format!("Error walking directory: {}", source_dir.display()))?;
         let src_path = entry.path();
         let rel_path = src_path.strip_prefix(source_dir).with_context(|| {
-            format!("Failed to strip prefix '{}' from '{}'", source_dir.display(), src_path.display())
+            format!(
+                "Failed to strip prefix '{}' from '{}'",
+                source_dir.display(),
+                src_path.display()
+            )
         })?;
 
-        let rel_str_unix = rel_path.to_str()
+        let rel_str_unix = rel_path
+            .to_str()
             .ok_or_else(|| anyhow!("Path contains non-UTF8 characters: {:?}", rel_path))?
             .replace(std::path::MAIN_SEPARATOR, "/");
 
@@ -199,7 +226,12 @@ pub fn copy_files(
         } else {
             // Ensure parent directory exists for the file
             if let Some(parent) = dst_path.parent() {
-                fs::create_dir_all(parent).with_context(|| format!("Failed to create parent directory for: {}", dst_path.display()))?;
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "Failed to create parent directory for: {}",
+                        dst_path.display()
+                    )
+                })?;
             }
 
             if src_path.file_name().and_then(|n| n.to_str()) == Some("typst.toml") {
@@ -210,21 +242,33 @@ pub fn copy_files(
                     .filter(|line| !line.trim_start().starts_with("#:schema"))
                     .collect::<Vec<_>>()
                     .join("\n");
-                fs::write(&dst_path, filtered)
-                    .with_context(|| format!("Failed to write filtered typst.toml to: {}", dst_path.display()))?;
+                fs::write(&dst_path, filtered).with_context(|| {
+                    format!(
+                        "Failed to write filtered typst.toml to: {}",
+                        dst_path.display()
+                    )
+                })?;
             } else if src_path.extension().and_then(|e| e.to_str()) == Some("typ") {
                 let content = fs::read_to_string(src_path)
                     .with_context(|| format!("Failed to read .typ file: {}", src_path.display()))?;
 
                 let new_content = import_re.replace_all(&content, |caps: &regex::Captures| {
-                    let specifier = caps.get(2).map_or("", |m| m.as_str());
-                    format!("#import \"{}{}\"", package_import_str, specifier)
+                    let specifier = caps.get(2).map_or("", |m| m.as_str()); // e.g. ": *" or ""
+                    format!("#import \"{}{}\"", full_package_import_str, specifier) // Use the constructed full import string
                 });
-                fs::write(&dst_path, new_content.as_bytes())
-                    .with_context(|| format!("Failed to write modified .typ file to: {}", dst_path.display()))?;
+                fs::write(&dst_path, new_content.as_bytes()).with_context(|| {
+                    format!(
+                        "Failed to write modified .typ file to: {}",
+                        dst_path.display()
+                    )
+                })?;
             } else {
                 fs::copy(src_path, &dst_path).with_context(|| {
-                    format!("Failed to copy file from '{}' to '{}'", src_path.display(), dst_path.display())
+                    format!(
+                        "Failed to copy file from '{}' to '{}'",
+                        src_path.display(),
+                        dst_path.display()
+                    )
                 })?;
             }
         }
