@@ -3,7 +3,7 @@ mod core;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use config::{BuildArgs, Cli, Commands, Config, InstallArgs};
+use config::{BuildArgs, Cli, Commands, Config, InstallArgs, ListArgs};
 use core::{compile_template, copy_files, generate_thumbnail, validate_package_name};
 use serde::Deserialize;
 use std::{
@@ -26,6 +26,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Build(args) => handle_build_command(args),
         Commands::Install(args) => handle_install_command(args),
+        Commands::List(args) => handle_list_command(args),
     }
 }
 
@@ -228,6 +229,12 @@ fn get_typst_data_dir() -> Result<PathBuf> {
         .map(|p| p.join("typst"))
 }
 
+fn get_typst_cache_dir() -> Result<PathBuf> {
+    dirs_next::cache_dir()
+        .ok_or_else(|| anyhow!("Could not determine system cache directory"))
+        .map(|p| p.join("typst"))
+}
+
 fn get_current_typst_version() -> Result<semver::Version> {
     let output = Command::new("typst")
         .arg("--version")
@@ -402,6 +409,115 @@ fn handle_install_command(args: InstallArgs) -> Result<()> {
         fetched_pkg_config.name, fetched_pkg_config.version
     );
     println!("You can now import it using: {}", import_statement);
+
+    Ok(())
+}
+
+fn handle_list_command(args: ListArgs) -> Result<()> {
+    println!("Installed Typst packages:");
+
+    let mut found_packages_count = 0;
+
+    let data_dir = get_typst_data_dir()?;
+    let data_packages_root_dir = data_dir.join("packages");
+
+    let cache_dir = get_typst_cache_dir()?;
+    let cache_packages_root_dir = cache_dir.join("packages");
+
+    let list_packages_in_root = |packages_root_dir: &Path, root_type: &str| -> Result<usize> {
+        let mut count = 0;
+        if !packages_root_dir.is_dir() {
+            println!(
+                "  No packages found in {} directory ({} does not exist).",
+                root_type,
+                packages_root_dir.display()
+            );
+            return Ok(0);
+        }
+
+        for namespace_entry in fs::read_dir(packages_root_dir).with_context(|| {
+            format!(
+                "Failed to read {} packages directory: {}",
+                root_type,
+                packages_root_dir.display()
+            )
+        })? {
+            let namespace_entry = namespace_entry?;
+            let namespace_path = namespace_entry.path();
+            if !namespace_path.is_dir() {
+                continue;
+            }
+            let namespace_name = namespace_entry.file_name().to_string_lossy().to_string();
+
+            for package_entry in fs::read_dir(&namespace_path).with_context(|| {
+                format!(
+                    "Failed to read namespace directory: {}",
+                    namespace_path.display()
+                )
+            })? {
+                let package_entry = package_entry?;
+                let package_path = package_entry.path();
+                if !package_path.is_dir() {
+                    continue;
+                }
+                let package_name = package_entry.file_name().to_string_lossy().to_string();
+
+                for version_entry in fs::read_dir(&package_path).with_context(|| {
+                    format!(
+                        "Failed to read package directory: {}",
+                        package_path.display()
+                    )
+                })? {
+                    let version_entry = version_entry?;
+                    let version_path = version_entry.path();
+                    if !version_path.is_dir() {
+                        continue;
+                    }
+                    let version_name = version_entry.file_name().to_string_lossy().to_string();
+
+                    println!("  @{}/{}:{}", namespace_name, package_name, version_name);
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    };
+
+    let list_local = args.local;
+    let list_preview = args.preview;
+    let list_all = !list_local && !list_preview;
+
+    if list_local || list_all {
+        println!("\nLocal packages (data directory):");
+        match list_packages_in_root(&data_packages_root_dir, "data") {
+            Ok(count) => found_packages_count += count,
+            Err(e) => eprintln!(
+                "Warning: Could not list packages from data directory: {}",
+                e
+            ),
+        }
+    }
+
+    if list_preview || list_all {
+        println!("\nPreview packages (cache directory):");
+        match list_packages_in_root(&cache_packages_root_dir, "cache") {
+            Ok(count) => found_packages_count += count,
+            Err(e) => eprintln!(
+                "Warning: Could not list packages from cache directory: {}",
+                e
+            ),
+        }
+    }
+
+    if found_packages_count == 0 {
+        if list_local && !list_preview {
+            println!("  No local packages found.");
+        } else if list_preview && !list_local {
+            println!("  No preview packages found.");
+        } else {
+            println!("  No packages found in standard Typst data or cache directories.");
+        }
+    }
 
     Ok(())
 }

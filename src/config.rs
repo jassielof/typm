@@ -15,6 +15,8 @@ pub enum Commands {
     Build(BuildArgs),
     /// Install a Typst package from a Git repository
     Install(InstallArgs),
+    /// List installed Typst packages
+    List(ListArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -41,6 +43,17 @@ pub struct InstallArgs {
     // the repository's default branch will be used.
     // #[arg(long)]
     // pub git_ref: Option<String>, // Future enhancement
+}
+
+#[derive(Parser, Debug)]
+pub struct ListArgs {
+    /// List only packages from the preview namespace (typically in the cache directory)
+    #[arg(long)]
+    pub preview: bool,
+
+    /// List only packages installed locally (typically in the data directory, e.g., @local, @gh-user/pkg)
+    #[arg(long)]
+    pub local: bool,
 }
 
 #[derive(Debug, Deserialize)]
