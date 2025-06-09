@@ -1,6 +1,7 @@
 [package]
 name = "typst-build"
 version = "0.1.0"
+repository = "https://github.com/jassielof/typst-build"
 edition = "2024"
 
 [dependencies]
