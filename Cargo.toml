@@ -2,6 +2,8 @@
 name = "typst-build"
 version = "0.1.0"
 repository = "https://github.com/jassielof/typst-build"
+authors = ["jassielof"]
+description = "A tool to build Typst packages/templates."
 edition = "2024"
 
 [dependencies]
