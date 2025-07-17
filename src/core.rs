@@ -136,7 +136,7 @@ pub fn copy_files(
     source_dir: &Path,
     dest_dir: &Path,
     exclude_patterns: &[String],
-    package_import_path: &str, // Renamed for clarity, expects "namespace/name" or "preview/name"
+    package_import_path: &str,
     package_version: &str,
     package_entrypoint: &str,
 ) -> Result<()> {
@@ -177,12 +177,10 @@ pub fn copy_files(
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow!("Invalid entrypoint name: {}", package_entrypoint))?;
 
-    // package_import_path is "namespace/name" or "preview/name"
-    // The full import string for rewriting, e.g., "@gh-user/pkg:1.0.0" or "@preview/pkg:1.0.0"
     let full_package_import_str = format!("@{}:{}", package_import_path, package_version);
 
     let import_re = Regex::new(&format!(
-        r#"#import\s+"((?:\.\./)+{})((?::\s*[^"]*)?)""#, // Matches ../../entrypoint.typ
+        r#"#import\s+"((?:\.\./)+{})((?::\s*[^"]*)?)""#,
         regex::escape(entrypoint_name)
     ))?;
 
@@ -203,11 +201,12 @@ pub fn copy_files(
             .ok_or_else(|| anyhow!("Path contains non-UTF8 characters: {:?}", rel_path))?
             .replace(std::path::MAIN_SEPARATOR, "/");
 
+        // Exclude output directory and its contents
         if glob_set.is_match(&rel_str_unix) {
             continue;
         }
 
-        let rel_str_native = rel_path.to_str().unwrap(); // Already checked for UTF8
+        let rel_str_native = rel_path.to_str().unwrap();
 
         let excluded_by_dir = directory_patterns.iter().any(|pattern| {
             rel_str_native == pattern
@@ -218,13 +217,20 @@ pub fn copy_files(
             continue;
         }
 
+        // Also skip destination directory if it's inside source_dir (prevents recursion)
+        if dest_dir.starts_with(source_dir) {
+            let dest_rel = dest_dir.strip_prefix(source_dir).unwrap();
+            if rel_path.starts_with(dest_rel) {
+                continue;
+            }
+        }
+
         let dst_path = dest_dir.join(rel_path);
 
         if entry.file_type().is_dir() {
             fs::create_dir_all(&dst_path)
                 .with_context(|| format!("Failed to create directory: {}", dst_path.display()))?;
         } else {
-            // Ensure parent directory exists for the file
             if let Some(parent) = dst_path.parent() {
                 fs::create_dir_all(parent).with_context(|| {
                     format!(
@@ -253,8 +259,8 @@ pub fn copy_files(
                     .with_context(|| format!("Failed to read .typ file: {}", src_path.display()))?;
 
                 let new_content = import_re.replace_all(&content, |caps: &regex::Captures| {
-                    let specifier = caps.get(2).map_or("", |m| m.as_str()); // e.g. ": *" or ""
-                    format!("#import \"{}{}\"", full_package_import_str, specifier) // Use the constructed full import string
+                    let specifier = caps.get(2).map_or("", |m| m.as_str());
+                    format!("#import \"{}{}\"", full_package_import_str, specifier)
                 });
                 fs::write(&dst_path, new_content.as_bytes()).with_context(|| {
                     format!(

@@ -32,8 +32,14 @@ fn main() -> Result<()> {
 }
 
 fn handle_build_command(args: BuildArgs) -> Result<()> {
+    // Canonicalize the TOML path to get an absolute path
     let toml_path = if args.toml_file.is_file() {
-        args.toml_file.clone()
+        args.toml_file.canonicalize().with_context(|| {
+            format!(
+                "Failed to canonicalize TOML file path: {}",
+                args.toml_file.display()
+            )
+        })?
     } else if args.toml_file.is_dir() {
         let path = args.toml_file.join("typst.toml");
         if !path.exists() {
@@ -42,7 +48,8 @@ fn handle_build_command(args: BuildArgs) -> Result<()> {
                 args.toml_file.display()
             ));
         }
-        path
+        path.canonicalize()
+            .with_context(|| format!("Failed to canonicalize TOML file path: {}", path.display()))?
     } else {
         return Err(anyhow!(
             "Path is neither a file nor a directory: {}",
@@ -50,19 +57,22 @@ fn handle_build_command(args: BuildArgs) -> Result<()> {
         ));
     };
 
-    let toml_dir = toml_path.parent().ok_or_else(|| {
-        anyhow!(
-            "Could not determine parent directory of TOML file: {}",
-            toml_path.display()
-        )
-    })?;
+    let toml_dir = toml_path
+        .parent()
+        .ok_or_else(|| {
+            anyhow!(
+                "Could not determine parent directory of TOML file: {}",
+                toml_path.display()
+            )
+        })?
+        .to_path_buf();
 
     let config_content = fs::read_to_string(&toml_path)
         .with_context(|| format!("Failed to read TOML file: {}", toml_path.display()))?;
     let config: Config = toml::from_str(&config_content)
         .with_context(|| format!("Failed to parse TOML from: {}", toml_path.display()))?;
 
-    validate_package_name(&config.package.name, toml_dir)?;
+    validate_package_name(&config.package.name, &toml_dir)?;
 
     if let Some(template_config) = &config.template {
         if let (Some(template_path), Some(template_entrypoint)) =
@@ -74,7 +84,7 @@ fn handle_build_command(args: BuildArgs) -> Result<()> {
                     template_path, template_entrypoint
                 );
                 compile_template(
-                    toml_dir,
+                    &toml_dir,
                     &config.package.name,
                     template_path,
                     template_entrypoint,
@@ -84,7 +94,7 @@ fn handle_build_command(args: BuildArgs) -> Result<()> {
                     if !thumbnail_path.is_empty() {
                         println!("Generating thumbnail: {}", thumbnail_path);
                         generate_thumbnail(
-                            toml_dir,
+                            &toml_dir,
                             &config.package.name,
                             template_path,
                             template_entrypoint,
@@ -108,11 +118,20 @@ fn handle_build_command(args: BuildArgs) -> Result<()> {
         .join(&config.package.name)
         .join(&config.package.version);
 
+    // Dynamically exclude the output directory (or whatever user specified)
+    let mut exclude = config.package.exclude.clone().unwrap_or_default();
+    if let Some(output_dir_name) = output_base_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+    {
+        exclude.push(output_dir_name);
+    }
+
     println!("Copying files to: {}", final_output_dir.display());
     copy_files(
-        toml_dir,
+        &toml_dir,
         &final_output_dir,
-        &config.package.exclude.clone().unwrap_or_default(),
+        &exclude,
         &format!("preview/{}", config.package.name),
         &config.package.version,
         config.package.entrypoint.as_deref().unwrap_or("main.typ"),
