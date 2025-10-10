@@ -1,0 +1,17 @@
+[project]
+name = "typm"
+version = "0.1.0"
+description = "Typst package manager"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{ name = "Jassiel Ovando", email = "jassielovando@protonmail.com" }]
+dependencies = [
+  "typer>=0.19.2",
+]
+
+[project.scripts]
+typm = "typm:main"
+
+[build-system]
+requires = ["uv_build>=0.9.1,<0.10.0"]
+build-backend = "uv_build"
