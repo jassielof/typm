@@ -75,7 +75,14 @@ def matches_version_req(req: str, ver: tuple[int, int, int]) -> bool:
                 op, v = tokens[i], tokens[i + 1]
                 i += 1
             else:
-                # Unknown token, ignore for lenience
+                # No operator found - treat bare version as minimum requirement (>=)
+                try:
+                    sv = parse_semver(t)
+                    c = cmp_semver(ver, sv)
+                    if c < 0:  # current version is less than required
+                        return False
+                except Exception:
+                    return False
                 i += 1
                 continue
         try:

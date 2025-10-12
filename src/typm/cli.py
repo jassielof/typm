@@ -27,13 +27,21 @@ def build(
     toml_file: Path = typer.Argument(
         ..., help="Path to the typst.toml file or its directory"
     ),
-    output_dir: Literal["output", "universe"] = typer.Option(
-        "output",
+    output_dir: str = typer.Option(
+        "out",
         "--output-dir",
-        help="Base output directory",
-        case_sensitive=False,
+        help="The output directory where the built package will be placed.",
+    ),
+    namespace: str = typer.Option(
+        "preview",
+        "--namespace",
+        "-n",
+        help="Namespace for the package (e.g., 'preview' for official, 'local' for self-hosted, or any custom namespace)",
     ),
 ) -> None:
+    """
+    Build a Typst package/template from a typst.toml file to be published or installed.
+    """
     # Resolve toml file
     if toml_file.is_file():
         toml_path = toml_file.resolve()
@@ -57,10 +65,23 @@ def build(
     package_version = pkg.get("version")
     package_exclude: list[str] = list(pkg.get("exclude", []) or [])
     package_entrypoint = pkg.get("entrypoint", "main.typ")
+    compiler_req = pkg.get("compiler")
 
     if not package_name or not package_version:
         typer.echo("Error: 'package.name' and 'package.version' are required.")
         raise typer.Exit(code=1)
+
+    # Check compiler version requirement
+    if compiler_req:
+        current = get_typst_version()
+        if not matches_version_req(compiler_req, current):
+            typer.echo(
+                f"Package requires Typst version '{compiler_req}', but you have {current[0]}.{current[1]}.{current[2]}."
+            )
+            raise typer.Exit(code=1)
+        typer.echo(
+            f"Typst version check passed (required: {compiler_req}, current: {current[0]}.{current[1]}.{current[2]})."
+        )
 
     validate_package_name(package_name, toml_dir)
 
@@ -94,7 +115,7 @@ def build(
         toml_dir,
         final_output_dir,
         package_exclude,
-        f"preview/{package_name}",
+        f"{namespace}/{package_name}",
         package_version,
         package_entrypoint,
     )
