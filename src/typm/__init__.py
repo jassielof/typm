@@ -1,7 +1,5 @@
-# from .cli import app
-from typm.utils.hello import hello
+from .cli import app
 
 
 def main() -> None:
-    hello()
-    # app()
+    app()
