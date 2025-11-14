@@ -123,6 +123,7 @@ def build(
     )
 
 
+# TODO: support installing directly from local paths
 @app.command()
 def install(
     git_source: str = typer.Argument(
@@ -225,7 +226,7 @@ def install(
         )
 
 
-@app.command("list")
+@app.command("list", help="List all installed Typst packages")
 def list_cmd(
     preview: bool = typer.Option(
         False, "--preview", help="List only preview (cache) packages"
@@ -274,3 +275,22 @@ def list_cmd(
             typer.echo(
                 "  No packages found in standard Typst data or cache directories."
             )
+
+
+# TODO: implement remove command
+@app.command()
+def remove():
+    """
+    Remove an installed Typst package
+    """
+    pass
+
+
+# TODO: implement update command
+@app.command()
+def update(check: bool = typer.Option()):
+    """
+    Update or check for updates on installed Typst packages.
+    Only applies to local packages
+    """
+    pass
