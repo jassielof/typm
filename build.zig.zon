@@ -1,21 +1,12 @@
 .{
     .name = .typm,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0x8205df1be9995f06,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .fangz = .{
-            .path = "modules/fangz",
-        },
-        .toml = .{
-            .path = "modules/toml",
-        },
-        .fugaz = .{
-            .path = "modules/fugaz",
-        },
-        .vereda = .{
-            .path = "modules/vereda",
-        },
+        .fangz = .{ .path = "dependencies/fangz" },
+        .toml = .{ .path = "dependencies/toml" },
+        .fugaz = .{ .path = "modules/fugaz" },
     },
     .paths = .{
         "build.zig",

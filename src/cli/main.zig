@@ -5,11 +5,13 @@ const fangz = @import("fangz");
 
 const root_cmd = @import("commands/root.zig");
 
-pub fn main() !void {
-    var app = try fangz.App.init(std.heap.page_allocator, .{
-        .name = "typm",
-        .description = "A CLI for managing Typst packages",
-        .version = "0.1.0",
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
+
+    var app = try fangz.App.init(allocator, io, .{
+        .display_name = "Typst Package Manager",
+        .tagline = "A CLI for managing and bundling Typst packages",
     });
     defer app.deinit();
 

@@ -1,11 +1,20 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Get the cache directory of Typst.
-/// Either checking the environment variable, or the default one based on the OS.
-pub fn getCacheDir(allocator: std.mem.Allocator) ![]u8 {
-    // const env_var = "TYPST_PACKAGE_CACHE_PATH";
+const Package = enum {
+    cache,
+    data,
+};
 
+const cache_path_env = "TYPST_PACKAGE_CACHE_PATH";
+const data_path_env = "TYPST_PACKAGE_PATH";
+
+/// Get the cache directory of Typst.
+///
+/// Either by firstly checking the respective environment variable, or the default one based on the OS.
+///
+/// See https://github.com/typst/packages/blob/c137d10e98e1cb686000c6de2ff1de56efcaaac8/README.md
+pub fn getPackageDir(allocator: std.mem.Allocator, package: Package) ![]u8 {
     var env = std.process.getEnvMap(allocator) catch return error.EnvError;
     defer env.deinit();
 
@@ -36,9 +45,9 @@ pub fn getCacheDir(allocator: std.mem.Allocator) ![]u8 {
     return std.fs.path.join(allocator, &.{ base, "typst" });
 }
 
-test getCacheDir {
+test getPackageDir {
     const allocator = std.testing.allocator;
-    const cache_dir = try getCacheDir(allocator);
+    const cache_dir = try getPackageDir(allocator);
     defer allocator.free(cache_dir);
 
     std.debug.print("Cache directory: {s}\n", .{cache_dir});
