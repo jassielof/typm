@@ -1,12 +1,9 @@
-[submodule "modules/fangz"]
-	path = modules/fangz
-	url = https://github.com/jassielof/fangz
-[submodule "modules/toml"]
-	path = modules/toml
-	url = https://github.com/jassielof/toml-zig
 [submodule "modules/fugaz"]
 	path = modules/fugaz
 	url = https://github.com/jassielof/fugaz.git
-[submodule "modules/vereda"]
-	path = modules/vereda
-	url = https://github.com/jassielof/vereda
+[submodule "dependencies/fangz"]
+	path = dependencies/fangz
+	url = https://github.com/jassielof/fangz
+[submodule "dependencies/toml"]
+	path = dependencies/toml
+	url = https://github.com/jassielof/toml-zig
