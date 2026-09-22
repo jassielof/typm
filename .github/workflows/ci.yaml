@@ -23,7 +23,7 @@ jobs:
           submodules: recursive
 
       - name: Setup Zig
-        uses: jassielof/setup-zig@v1
+        uses: jassielof/setup-zig@main
 
       - name: Formatting
         run: zig fmt --check build.zig build.zig.zon src

@@ -1,24 +1,10 @@
 # TypM: Typst Package Manager
 
-## Build from source
+A simple CLI tool for managing Typst packages and bundling them.
 
-Requires [Zig](https://ziglang.org/) 0.15.2 or newer (see `build.zig.zon`).
+## Prerequisites
 
-```sh
-zig build -Doptimize=ReleaseFast
-```
+These must be installed and available on your system:
 
-The `typm` binary is written to `zig-out/bin/` (or `zig-out\bin\typm.exe` on Windows). Add that directory to your `PATH`, or run it via `zig build run -- <args>`.
-
-### Run tests
-
-```sh
-zig build tests
-```
-
-### Dependencies
-
-These must be installed and available on your `PATH`:
-
-- **Typst** — package layout, `typst compile` for templates/thumbnails when using `pack` / `build`.
-- **Git** — `install` and `info` when resolving remote sources.
+- Typst
+- Git

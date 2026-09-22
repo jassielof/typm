@@ -26,6 +26,7 @@ fn getTypstVersion() !semver {
         .allocator = allocator,
         .argv = &.{ "typst", "--version" },
     }) catch {
+        // To avoid handling errors everywhere if Typst isn't found, it would be better to check on every initial call if Typst is on path as most operations
         return error.TypstNotFound;
     };
 
