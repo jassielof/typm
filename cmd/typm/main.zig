@@ -4,10 +4,13 @@ const semver = std.SemanticVersion;
 const fangz = @import("fangz");
 
 const root_cmd = @import("commands/root.zig");
+const support = @import("support.zig");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
+
+    support.process_environ = init.minimal.environ;
 
     var app = try fangz.App.init(allocator, io, .{
         .display_name = "Typst Package Manager",
@@ -16,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit();
 
     try root_cmd.register(app.root());
-    try app.executeProcess();
+    try app.executeProcess(init.minimal.args);
 }
 
 fn getTypstVersion() !semver {
@@ -35,7 +38,7 @@ fn getTypstVersion() !semver {
         allocator.free(result.stderr);
     }
 
-    if (result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         std.process.exit(1);
     }
 

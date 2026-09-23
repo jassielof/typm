@@ -45,40 +45,40 @@ fn run(ctx: *fangz.ParseContext) !void {
     if (want_local or list_all) {
         const data_dir = try support.typstDataDir(allocator);
         const packages_root = try std.fs.path.join(allocator, &.{ data_dir, "packages" });
-        try printHeading("Data Packages");
-        _ = try listPackagesInRoot(allocator, packages_root, "data", namespace);
+        try printHeading(ctx.io, "Data Packages");
+        _ = try listPackagesInRoot(allocator, ctx.io, packages_root, "data", namespace);
     }
 
     if (want_universe or list_all) {
         const cache_dir = try support.typstCacheDir(allocator);
         const packages_root = try std.fs.path.join(allocator, &.{ cache_dir, "packages" });
-        try printHeading("Cache Packages");
-        _ = try listPackagesInRoot(allocator, packages_root, "cache", namespace);
+        try printHeading(ctx.io, "Cache Packages");
+        _ = try listPackagesInRoot(allocator, ctx.io, packages_root, "cache", namespace);
     }
 }
 
-fn printHeading(title: []const u8) !void {
+fn printHeading(io: std.Io, title: []const u8) !void {
     var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     try stdout_writer.interface.print("\n{s}\n", .{title});
     try stdout_writer.interface.flush();
 }
 
-fn listPackagesInRoot(allocator: std.mem.Allocator, packages_root_dir: []const u8, root_type: []const u8, filter_namespace: ?[]const u8) !usize {
-    if (!support.dirExists(packages_root_dir)) {
+fn listPackagesInRoot(allocator: std.mem.Allocator, io: std.Io, packages_root_dir: []const u8, root_type: []const u8, filter_namespace: ?[]const u8) !usize {
+    if (!support.dirExists(io, packages_root_dir)) {
         var stdout_buffer: [512]u8 = undefined;
-        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
         try stdout_writer.interface.print("  No packages found in {s} directory ({s} does not exist).\n", .{ root_type, packages_root_dir });
         try stdout_writer.interface.flush();
         return 0;
     }
 
     var count: usize = 0;
-    var root_dir = try std.fs.cwd().openDir(packages_root_dir, .{ .iterate = true });
-    defer root_dir.close();
+    var root_dir = try std.Io.Dir.cwd().openDir(io, packages_root_dir, .{ .iterate = true });
+    defer root_dir.close(io);
 
     var ns_iter = root_dir.iterate();
-    while (try ns_iter.next()) |ns_entry| {
+    while (try ns_iter.next(io)) |ns_entry| {
         if (ns_entry.kind != .directory) continue;
         const namespace = ns_entry.name;
         if (filter_namespace) |expected| {
@@ -87,29 +87,29 @@ fn listPackagesInRoot(allocator: std.mem.Allocator, packages_root_dir: []const u
 
         const namespace_path = try std.fs.path.join(allocator, &.{ packages_root_dir, namespace });
         defer allocator.free(namespace_path);
-        var namespace_dir = try std.fs.cwd().openDir(namespace_path, .{ .iterate = true });
-        defer namespace_dir.close();
+        var namespace_dir = try std.Io.Dir.cwd().openDir(io, namespace_path, .{ .iterate = true });
+        defer namespace_dir.close(io);
 
         var pkg_iter = namespace_dir.iterate();
-        while (try pkg_iter.next()) |pkg_entry| {
+        while (try pkg_iter.next(io)) |pkg_entry| {
             if (pkg_entry.kind != .directory) continue;
             const package_name = pkg_entry.name;
             const package_path = try std.fs.path.join(allocator, &.{ namespace_path, package_name });
             defer allocator.free(package_path);
 
-            var package_dir = try std.fs.cwd().openDir(package_path, .{ .iterate = true });
-            defer package_dir.close();
+            var package_dir = try std.Io.Dir.cwd().openDir(io, package_path, .{ .iterate = true });
+            defer package_dir.close(io);
 
             var versions = std.ArrayList(VersionInfo).empty;
             defer versions.deinit(allocator);
 
             var version_iter = package_dir.iterate();
-            while (try version_iter.next()) |version_entry| {
+            while (try version_iter.next(io)) |version_entry| {
                 if (version_entry.kind != .directory) continue;
                 const version_path = try std.fs.path.join(allocator, &.{ package_path, version_entry.name });
                 defer allocator.free(version_path);
 
-                const description = try getPackageDescription(allocator, version_path);
+                const description = try getPackageDescription(allocator, io, version_path);
                 try versions.append(allocator, .{
                     .version = try allocator.dupe(u8, version_entry.name),
                     .description = description,
@@ -119,13 +119,13 @@ fn listPackagesInRoot(allocator: std.mem.Allocator, packages_root_dir: []const u
 
             if (versions.items.len == 0) continue;
             sortVersionsDescending(versions.items);
-            try printPackageSummary(namespace, package_name, versions.items);
+            try printPackageSummary(io, namespace, package_name, versions.items);
         }
     }
 
     if (count == 0) {
         var stdout_buffer: [512]u8 = undefined;
-        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
         if (filter_namespace) |namespace| {
             try stdout_writer.interface.print("  No {s} packages found with namespace '{s}'.\n", .{ root_type, namespace });
         } else {
@@ -137,17 +137,17 @@ fn listPackagesInRoot(allocator: std.mem.Allocator, packages_root_dir: []const u
     return count;
 }
 
-fn getPackageDescription(allocator: std.mem.Allocator, version_dir: []const u8) ![]const u8 {
+fn getPackageDescription(allocator: std.mem.Allocator, io: std.Io, version_dir: []const u8) ![]const u8 {
     const toml_path = try std.fs.path.join(allocator, &.{ version_dir, "typst.toml" });
-    if (!support.fileExists(toml_path)) return allocator.dupe(u8, "");
+    if (!support.fileExists(io, toml_path)) return allocator.dupe(u8, "");
 
-    const cfg = support.readPackageFile(allocator, toml_path) catch return allocator.dupe(u8, "");
+    const cfg = support.readPackageFile(allocator, io, toml_path) catch return allocator.dupe(u8, "");
     return allocator.dupe(u8, (cfg.package orelse support.PackageSection{}).description orelse "");
 }
 
-fn printPackageSummary(namespace: []const u8, package_name: []const u8, versions: []const VersionInfo) !void {
+fn printPackageSummary(io: std.Io, namespace: []const u8, package_name: []const u8, versions: []const VersionInfo) !void {
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
 
     try stdout_writer.interface.print("  @{s}/{s}\n", .{ namespace, package_name });
     try stdout_writer.interface.print("    Versions: ", .{});

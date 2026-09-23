@@ -14,11 +14,12 @@ const data_path_env = "TYPST_PACKAGE_PATH";
 /// Either by firstly checking the respective environment variable, or the default one based on the OS.
 ///
 /// See https://github.com/typst/packages/blob/c137d10e98e1cb686000c6de2ff1de56efcaaac8/README.md
-pub fn getPackageDir(allocator: std.mem.Allocator, package: Package) ![]u8 {
-    var env = std.process.getEnvMap(allocator) catch return error.EnvError;
+pub fn getPackageDir(allocator: std.mem.Allocator, environ: std.process.Environ, package: Package) ![]u8 {
+    var env = environ.createMap(allocator) catch return error.EnvError;
     defer env.deinit();
 
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+    const home = try environ.getAlloc(allocator, "HOME");
+    defer allocator.free(home);
 
     var base: []const u8 = undefined;
 
@@ -47,7 +48,7 @@ pub fn getPackageDir(allocator: std.mem.Allocator, package: Package) ![]u8 {
 
 test getPackageDir {
     const allocator = std.testing.allocator;
-    const cache_dir = try getPackageDir(allocator);
+    const cache_dir = try getPackageDir(allocator, .empty, .cache);
     defer allocator.free(cache_dir);
 
     std.debug.print("Cache directory: {s}\n", .{cache_dir});

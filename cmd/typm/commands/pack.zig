@@ -43,20 +43,20 @@ fn run(ctx: *fangz.ParseContext) !void {
     const output_dir = ctx.stringFlag("output-dir") orelse "out";
     const namespace = ctx.stringFlag("namespace") orelse "preview";
 
-    const toml_path = try support.resolveTomlPath(allocator, manifest);
+    const toml_path = try support.resolveTomlPath(allocator, ctx.io, manifest);
     const toml_dir = std.fs.path.dirname(toml_path) orelse ".";
 
-    const cfg = try support.readPackageFile(allocator, toml_path);
+    const cfg = try support.readPackageFile(allocator, ctx.io, toml_path);
     const pkg = cfg.package orelse support.PackageSection{};
 
-    support.validatePackageConfig(pkg.name, pkg.version);
+    support.validatePackageConfig(ctx.io, pkg.name, pkg.version);
     const package_name = pkg.name.?;
     const package_version = pkg.version.?;
     const package_entrypoint = pkg.entrypoint orelse "main.typ";
 
-    support.validatePackageName(package_name, toml_dir);
-    support.checkCompilerVersion(pkg.compiler);
-    try support.buildTemplate(allocator, toml_dir, package_name, cfg.template);
+    support.validatePackageName(ctx.io, package_name, toml_dir);
+    support.checkCompilerVersion(ctx.io, pkg.compiler);
+    try support.buildTemplate(allocator, ctx.io, toml_dir, package_name, cfg.template);
 
     var excludes = std.ArrayList([]const u8).empty;
     defer excludes.deinit(allocator);
@@ -75,12 +75,12 @@ fn run(ctx: *fangz.ParseContext) !void {
     const final_output_dir = try std.fs.path.join(allocator, &.{ output_dir, package_name, package_version });
 
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(ctx.io, &stdout_buffer);
     try stdout_writer.interface.print("Copying files to: {s}\n", .{final_output_dir});
     try stdout_writer.interface.flush();
 
     const import_base = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ namespace, package_name });
-    try support.copyPackageFiles(allocator, toml_dir, final_output_dir, excludes.items, import_base, package_version, package_entrypoint);
+    try support.copyPackageFiles(allocator, ctx.io, toml_dir, final_output_dir, excludes.items, import_base, package_version, package_entrypoint);
 
     try stdout_writer.interface.print("Package '{s}' v{s} built successfully to {s}\n", .{ package_name, package_version, final_output_dir });
     try stdout_writer.interface.flush();

@@ -4,6 +4,10 @@ const toml = @import("toml");
 
 const GitSource = @import("GitSource.zig").GitSource;
 
+/// Set once from `main` before any command runs, since environment access
+/// requires the `Environ` handed to us by `std.process.Init`.
+pub var process_environ: std.process.Environ = .empty;
+
 pub const PackageFile = struct {
     package: ?PackageSection = null,
     template: ?TemplateSection = null,
@@ -28,54 +32,58 @@ pub const TemplateSection = struct {
     thumbnail: ?[]const u8 = null,
 };
 
-pub fn readPackageFile(allocator: std.mem.Allocator, toml_path: []const u8) !PackageFile {
-    const content = try std.fs.cwd().readFileAlloc(allocator, toml_path, 1024 * 1024);
-    defer allocator.free(content);
+pub fn readPackageFile(allocator: std.mem.Allocator, io: std.Io, toml_path: []const u8) !PackageFile {
+    // Not freed: `toml.parse` may return string fields that borrow slices
+    // directly from this buffer instead of duplicating them. Callers pass an
+    // arena allocator that reclaims this when the command finishes.
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, toml_path, allocator, .limited(1024 * 1024));
 
     return toml.parse(PackageFile, allocator, content);
 }
 
-pub fn resolveTomlPath(allocator: std.mem.Allocator, input_path: []const u8) ![]u8 {
-    if (fileExists(input_path)) {
+pub fn resolveTomlPath(allocator: std.mem.Allocator, io: std.Io, input_path: []const u8) ![]u8 {
+    if (fileExists(io, input_path)) {
         return allocator.dupe(u8, input_path);
     }
 
-    if (dirExists(input_path)) {
+    if (dirExists(io, input_path)) {
         const candidate = try std.fs.path.join(allocator, &.{ input_path, "typst.toml" });
         errdefer allocator.free(candidate);
 
-        if (!fileExists(candidate)) {
-            failWithDetail("No typst.toml found in directory:", input_path);
+        if (!fileExists(io, candidate)) {
+            failWithDetail(io, "No typst.toml found in directory:", input_path);
         }
 
         return candidate;
     }
 
-    failWithDetail("Path is neither a file nor a directory:", input_path);
+    failWithDetail(io, "Path is neither a file nor a directory:", input_path);
 }
 
-pub fn validatePackageConfig(name: ?[]const u8, version: ?[]const u8) void {
+pub fn validatePackageConfig(io: std.Io, name: ?[]const u8, version: ?[]const u8) void {
     if (name == null or version == null) {
-        failWithDetail("Error: 'package.name' and 'package.version' are required.", "");
+        failWithDetail(io, "Error: 'package.name' and 'package.version' are required.", "");
     }
 }
 
-pub fn validatePackageName(package_name: []const u8, toml_dir: []const u8) void {
+pub fn validatePackageName(io: std.Io, package_name: []const u8, toml_dir: []const u8) void {
     const dir_name = std.fs.path.basename(toml_dir);
     if (!std.mem.eql(u8, package_name, dir_name)) {
         var buffer: [4096]u8 = undefined;
         const message = std.fmt.bufPrint(&buffer, "Package name '{s}' does not match parent directory name '{s}'", .{ package_name, dir_name }) catch "Package name does not match parent directory name";
-        failWithDetail(message, "");
+        failWithDetail(io, message, "");
     }
 }
 
-pub fn getTypstVersion() !std.SemanticVersion {
+pub fn getTypstVersion(io: std.Io) !std.SemanticVersion {
     const allocator = std.heap.page_allocator;
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "typst", "--version" },
-    }) catch {
-        return error.TypstNotFound;
+    }) catch |err| switch (err) {
+        error.FileNotFound => {
+            failWithDetail(io, "typst was not found on PATH.", "Install Typst and make sure it is available on PATH: https://github.com/typst/typst#installation");
+        },
+        else => return error.TypstNotFound,
     };
 
     defer {
@@ -83,7 +91,7 @@ pub fn getTypstVersion() !std.SemanticVersion {
         allocator.free(result.stderr);
     }
 
-    if (result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.TypstNotFound;
     }
 
@@ -94,10 +102,10 @@ pub fn getTypstVersion() !std.SemanticVersion {
     return std.SemanticVersion.parse(version_str) catch error.InvalidSemver;
 }
 
-pub fn checkCompilerVersion(compiler_req: ?[]const u8) void {
+pub fn checkCompilerVersion(io: std.Io, compiler_req: ?[]const u8) void {
     const req = compiler_req orelse return;
-    const current = getTypstVersion() catch {
-        failWithDetail("Failed to determine Typst version.", "");
+    const current = getTypstVersion(io) catch {
+        failWithDetail(io, "Failed to determine Typst version.", "");
     };
 
     if (!matchesVersionReq(req, current)) {
@@ -105,11 +113,11 @@ pub fn checkCompilerVersion(compiler_req: ?[]const u8) void {
         const current_str = std.fmt.bufPrint(&buffer, "{d}.{d}.{d}", .{ current.major, current.minor, current.patch }) catch "<unknown>";
         var message_buffer: [512]u8 = undefined;
         const message = std.fmt.bufPrint(&message_buffer, "Package requires Typst version '{s}', but you have {s}.", .{ req, current_str }) catch "Package requires a different Typst version.";
-        failWithDetail(message, "");
+        failWithDetail(io, message, "");
     }
 
     var stdout_buffer: [256]u8 = undefined;
-    var writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     writer.interface.print("Typst version check passed (required: {s}, current: {d}.{d}.{d}).\n", .{ req, current.major, current.minor, current.patch }) catch {};
     writer.interface.flush() catch {};
 }
@@ -154,21 +162,21 @@ pub fn matchesVersionReq(req: []const u8, version: std.SemanticVersion) bool {
     return true;
 }
 
-pub fn buildTemplate(allocator: std.mem.Allocator, toml_dir: []const u8, package_name: []const u8, template: ?TemplateSection) !void {
+pub fn buildTemplate(allocator: std.mem.Allocator, io: std.Io, toml_dir: []const u8, package_name: []const u8, template: ?TemplateSection) !void {
     const template_section = template orelse return;
     const template_path = template_section.path orelse return;
     const template_entrypoint = template_section.entrypoint orelse return;
     const project_root = std.fs.path.dirname(toml_dir) orelse ".";
 
     var stdout_buffer: [512]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     try stdout_writer.interface.print("Compiling template: {s}/{s}\n", .{ template_path, template_entrypoint });
     try stdout_writer.interface.flush();
 
     const input_path = try std.fs.path.join(allocator, &.{ project_root, package_name, template_path, template_entrypoint });
     defer allocator.free(input_path);
 
-    try runProcessChecked(allocator, &.{ "typst", "compile", "--root", project_root, input_path }, "Template compilation failed.");
+    try runProcessChecked(allocator, io, &.{ "typst", "compile", "--root", project_root, input_path }, "Template compilation failed.");
 
     if (template_section.thumbnail) |thumbnail_path| {
         try stdout_writer.interface.print("Generating thumbnail: {s}\n", .{thumbnail_path});
@@ -177,12 +185,13 @@ pub fn buildTemplate(allocator: std.mem.Allocator, toml_dir: []const u8, package
         const output_path = try std.fs.path.join(allocator, &.{ project_root, package_name, thumbnail_path });
         defer allocator.free(output_path);
 
-        try runProcessChecked(allocator, &.{ "typst", "compile", "--root", project_root, "--pages", "1", input_path, output_path }, "Thumbnail generation failed.");
+        try runProcessChecked(allocator, io, &.{ "typst", "compile", "--root", project_root, "--pages", "1", input_path, output_path }, "Thumbnail generation failed.");
     }
 }
 
 pub fn copyPackageFiles(
     allocator: std.mem.Allocator,
+    io: std.Io,
     source_dir: []const u8,
     dest_dir: []const u8,
     exclude_patterns: []const []const u8,
@@ -190,13 +199,13 @@ pub fn copyPackageFiles(
     package_version: []const u8,
     package_entrypoint: []const u8,
 ) !void {
-    try std.fs.cwd().makePath(dest_dir);
+    try std.Io.Dir.cwd().createDirPath(io, dest_dir);
 
     const full_package_import = try std.fmt.allocPrint(allocator, "@{s}:{s}", .{ package_import_base, package_version });
     defer allocator.free(full_package_import);
 
     const entrypoint_name = std.fs.path.basename(package_entrypoint);
-    try copyPackageFilesRecursive(allocator, source_dir, dest_dir, "", exclude_patterns, entrypoint_name, full_package_import);
+    try copyPackageFilesRecursive(allocator, io, source_dir, dest_dir, "", exclude_patterns, entrypoint_name, full_package_import);
 }
 
 pub fn parseGitSource(allocator: std.mem.Allocator, input: []const u8) !GitSource {
@@ -204,7 +213,7 @@ pub fn parseGitSource(allocator: std.mem.Allocator, input: []const u8) !GitSourc
     return parseGitUrl(allocator, input);
 }
 
-pub fn cloneRepository(allocator: std.mem.Allocator, source: *const GitSource, clone_dir: []const u8) !void {
+pub fn cloneRepository(allocator: std.mem.Allocator, io: std.Io, source: *const GitSource, clone_dir: []const u8) !void {
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
 
@@ -214,15 +223,15 @@ pub fn cloneRepository(allocator: std.mem.Allocator, source: *const GitSource, c
     }
     try argv.appendSlice(allocator, &.{ source.repo_url_for_clone, clone_dir });
 
-    try runProcessCheckedOwned(allocator, argv.items, "Failed to clone repository.");
+    try runProcessCheckedOwned(allocator, io, argv.items, "Failed to clone repository.");
 }
 
-pub fn collectTypstTomlFiles(allocator: std.mem.Allocator, dir_path: []const u8, out: *std.ArrayList([]u8)) !void {
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-    defer dir.close();
+pub fn collectTypstTomlFiles(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8, out: *std.ArrayList([]u8)) !void {
+    var dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
+    defer dir.close(io);
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         const child_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
         errdefer allocator.free(child_path);
 
@@ -238,7 +247,7 @@ pub fn collectTypstTomlFiles(allocator: std.mem.Allocator, dir_path: []const u8,
                     allocator.free(child_path);
                     continue;
                 }
-                try collectTypstTomlFiles(allocator, child_path, out);
+                try collectTypstTomlFiles(allocator, io, child_path, out);
                 allocator.free(child_path);
                 continue;
             },
@@ -249,9 +258,15 @@ pub fn collectTypstTomlFiles(allocator: std.mem.Allocator, dir_path: []const u8,
     }
 }
 
-pub fn relativeParentDir(allocator: std.mem.Allocator, root: []const u8, file_path: []const u8) ![]u8 {
+pub fn relativeParentDir(allocator: std.mem.Allocator, io: std.Io, root: []const u8, file_path: []const u8) ![]u8 {
     const parent = std.fs.path.dirname(file_path) orelse return allocator.dupe(u8, ".");
-    return std.fs.path.relative(allocator, root, parent);
+    return relativePath(allocator, io, root, parent);
+}
+
+pub fn relativePath(allocator: std.mem.Allocator, io: std.Io, from: []const u8, to: []const u8) ![]u8 {
+    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.Io.Dir.cwd().realPath(io, &cwd_buffer);
+    return std.fs.path.relative(allocator, cwd_buffer[0..cwd_len], null, from, to);
 }
 
 pub fn typstDataDir(allocator: std.mem.Allocator) ![]u8 {
@@ -294,26 +309,26 @@ pub fn typstCacheDir(allocator: std.mem.Allocator) ![]u8 {
     };
 }
 
-pub fn fileExists(path: []const u8) bool {
-    const file = std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+pub fn fileExists(io: std.Io, path: []const u8) bool {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{ .allow_directory = false }) catch return false;
+    file.close(io);
     return true;
 }
 
-pub fn dirExists(path: []const u8) bool {
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+pub fn dirExists(io: std.Io, path: []const u8) bool {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
+    dir.close(io);
     return true;
 }
 
-pub fn failWithDetail(message: []const u8, detail: []const u8) noreturn {
-    printError(message, if (detail.len == 0) null else detail) catch {};
+pub fn failWithDetail(io: std.Io, message: []const u8, detail: []const u8) noreturn {
+    printError(io, message, if (detail.len == 0) null else detail) catch {};
     std.process.exit(1);
 }
 
-pub fn printError(message: []const u8, detail: ?[]const u8) !void {
+pub fn printError(io: std.Io, message: []const u8, detail: ?[]const u8) !void {
     var stderr_buffer: [4096]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     if (detail) |value| {
         try stderr_writer.interface.print("{s} {s}\n", .{ message, value });
     } else {
@@ -322,9 +337,9 @@ pub fn printError(message: []const u8, detail: ?[]const u8) !void {
     try stderr_writer.interface.flush();
 }
 
-pub fn printRawError(message: []const u8) !void {
+pub fn printRawError(io: std.Io, message: []const u8) !void {
     var stderr_buffer: [4096]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     try stderr_writer.interface.print("{s}", .{message});
     if (!std.mem.endsWith(u8, message, "\n")) {
         try stderr_writer.interface.print("\n", .{});
@@ -339,15 +354,17 @@ pub fn providerPrefixForHost(host: []const u8) []const u8 {
     return host;
 }
 
-pub fn promptSelection(max_choice: usize) !usize {
+pub fn promptSelection(io: std.Io, max_choice: usize) !usize {
     var stdout_buffer: [128]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     try stdout_writer.interface.print("Enter number (1-{d}): ", .{max_choice});
     try stdout_writer.interface.flush();
 
-    var stdin = std.fs.File.stdin();
+    const stdin = std.Io.File.stdin();
+    var read_buffer: [128]u8 = undefined;
+    var stdin_reader = stdin.reader(io, &read_buffer);
     var input_buffer: [128]u8 = undefined;
-    const bytes_read = try stdin.read(&input_buffer);
+    const bytes_read = try stdin_reader.interface.readSliceShort(&input_buffer);
     const trimmed = std.mem.trim(u8, input_buffer[0..bytes_read], " \t\r\n");
     return std.fmt.parseInt(usize, trimmed, 10);
 }
@@ -364,6 +381,7 @@ fn compareSemver(a: std.SemanticVersion, b: std.SemanticVersion) i8 {
 
 fn copyPackageFilesRecursive(
     allocator: std.mem.Allocator,
+    io: std.Io,
     source_dir: []const u8,
     dest_dir: []const u8,
     rel_dir: []const u8,
@@ -377,18 +395,18 @@ fn copyPackageFilesRecursive(
         try std.fs.path.join(allocator, &.{ source_dir, rel_dir });
     defer allocator.free(current_source);
 
-    var dir = try std.fs.cwd().openDir(current_source, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(io, current_source, .{ .iterate = true });
+    defer dir.close(io);
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         const rel_path = if (rel_dir.len == 0)
             try allocator.dupe(u8, entry.name)
         else
             try std.fs.path.join(allocator, &.{ rel_dir, entry.name });
         defer allocator.free(rel_path);
 
-        if (try shouldExclude(allocator, rel_path, entry.kind, source_dir, exclude_patterns)) {
+        if (try shouldExclude(allocator, io, rel_path, entry.kind, source_dir, exclude_patterns)) {
             continue;
         }
 
@@ -399,30 +417,30 @@ fn copyPackageFilesRecursive(
 
         switch (entry.kind) {
             .directory => {
-                try std.fs.cwd().makePath(dst_path);
-                try copyPackageFilesRecursive(allocator, source_dir, dest_dir, rel_path, exclude_patterns, entrypoint_name, full_package_import);
+                try std.Io.Dir.cwd().createDirPath(io, dst_path);
+                try copyPackageFilesRecursive(allocator, io, source_dir, dest_dir, rel_path, exclude_patterns, entrypoint_name, full_package_import);
             },
             .file => {
                 if (std.fs.path.dirname(dst_path)) |parent| {
-                    try std.fs.cwd().makePath(parent);
+                    try std.Io.Dir.cwd().createDirPath(io, parent);
                 }
 
                 if (std.mem.eql(u8, entry.name, "typst.toml")) {
-                    const content = try std.fs.cwd().readFileAlloc(allocator, src_path, 1024 * 1024);
+                    const content = try std.Io.Dir.cwd().readFileAlloc(io, src_path, allocator, .limited(1024 * 1024));
                     defer allocator.free(content);
 
                     const filtered = try removeSchemaLines(allocator, content);
                     defer allocator.free(filtered);
-                    try writeFile(dst_path, filtered);
+                    try writeFile(io, dst_path, filtered);
                 } else if (std.mem.endsWith(u8, entry.name, ".typ")) {
-                    const content = try std.fs.cwd().readFileAlloc(allocator, src_path, 1024 * 1024);
+                    const content = try std.Io.Dir.cwd().readFileAlloc(io, src_path, allocator, .limited(1024 * 1024));
                     defer allocator.free(content);
 
                     const rewritten = try rewriteImports(allocator, content, entrypoint_name, full_package_import);
                     defer allocator.free(rewritten);
-                    try writeFile(dst_path, rewritten);
+                    try writeFile(io, dst_path, rewritten);
                 } else {
-                    try std.fs.Dir.copyFile(std.fs.cwd(), src_path, std.fs.cwd(), dst_path, .{});
+                    try std.Io.Dir.copyFile(std.Io.Dir.cwd(), src_path, std.Io.Dir.cwd(), dst_path, io, .{});
                 }
             },
             else => {},
@@ -437,7 +455,7 @@ fn removeSchemaLines(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
 
     var first = true;
     while (lines.next()) |line| {
-        const trimmed = std.mem.trimLeft(u8, std.mem.trimRight(u8, line, "\r"), " \t");
+        const trimmed = std.mem.trimStart(u8, std.mem.trimEnd(u8, line, "\r"), " \t");
         if (std.mem.startsWith(u8, trimmed, "#:schema")) {
             continue;
         }
@@ -499,7 +517,7 @@ fn shouldRewriteImport(target: []const u8, entrypoint_name: []const u8) bool {
     return saw_parent and std.mem.eql(u8, rest, entrypoint_name);
 }
 
-fn shouldExclude(allocator: std.mem.Allocator, rel_path: []const u8, entry_kind: std.fs.Dir.Entry.Kind, source_dir: []const u8, patterns: []const []const u8) !bool {
+fn shouldExclude(allocator: std.mem.Allocator, io: std.Io, rel_path: []const u8, entry_kind: std.Io.File.Kind, source_dir: []const u8, patterns: []const []const u8) !bool {
     const normalized_rel = try normalizeToPosix(allocator, rel_path);
     defer allocator.free(normalized_rel);
 
@@ -523,7 +541,7 @@ fn shouldExclude(allocator: std.mem.Allocator, rel_path: []const u8, entry_kind:
             const absolute_candidate = std.fs.path.join(std.heap.page_allocator, &.{ source_dir, trimmed_pattern }) catch continue;
             defer std.heap.page_allocator.free(absolute_candidate);
 
-            if (entry_kind == .directory and dirExists(absolute_candidate)) {
+            if (entry_kind == .directory and dirExists(io, absolute_candidate)) {
                 if (std.mem.eql(u8, normalized_rel, normalized_pattern) or startsWithDirPrefix(normalized_rel, normalized_pattern)) {
                     return true;
                 }
@@ -629,10 +647,10 @@ fn matchClass(class_pattern: []const u8, byte: u8) bool {
     return if (negated) !matched else matched;
 }
 
-fn writeFile(path: []const u8, content: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(content);
+fn writeFile(io: std.Io, path: []const u8, content: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, content);
 }
 
 fn tryParseAliasForm(allocator: std.mem.Allocator, input: []const u8) !?GitSource {
@@ -766,9 +784,16 @@ fn trimGitSuffix(segment: []const u8) []const u8 {
     return segment;
 }
 
+fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    return process_environ.getAlloc(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableMissing => error.EnvironmentVariableNotFound,
+        else => |e| e,
+    };
+}
+
 fn getEnvOrHomeFallback(allocator: std.mem.Allocator, env_names: []const []const u8, home_suffix: []const []const u8) ![]u8 {
     for (env_names) |name| {
-        if (std.process.getEnvVarOwned(allocator, name)) |value| {
+        if (getEnvVarOwned(allocator, name)) |value| {
             return value;
         } else |err| switch (err) {
             error.EnvironmentVariableNotFound => continue,
@@ -791,14 +816,14 @@ fn getHomeWithSuffix(allocator: std.mem.Allocator, suffix: []const []const u8) !
 
 fn getHomeDir(allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
-        if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |value| {
+        if (getEnvVarOwned(allocator, "USERPROFILE")) |value| {
             return value;
         } else |err| switch (err) {
             error.EnvironmentVariableNotFound => {},
             else => return err,
         }
 
-        if (std.process.getEnvVarOwned(allocator, "HOME")) |value| {
+        if (getEnvVarOwned(allocator, "HOME")) |value| {
             return value;
         } else |err| switch (err) {
             error.EnvironmentVariableNotFound => return error.HomeDirectoryNotFound,
@@ -806,45 +831,52 @@ fn getHomeDir(allocator: std.mem.Allocator) ![]u8 {
         }
     }
 
-    return std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+    return getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => error.HomeDirectoryNotFound,
         else => err,
     };
 }
 
-fn runProcessChecked(allocator: std.mem.Allocator, argv: []const []const u8, failure_message: []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+fn failOnMissingTool(io: std.Io, err: std.process.RunError, program: []const u8) noreturn {
+    if (err == error.FileNotFound) {
+        var buffer: [256]u8 = undefined;
+        const message = std.fmt.bufPrint(&buffer, "'{s}' was not found on PATH.", .{program}) catch "Required tool was not found on PATH.";
+        failWithDetail(io, message, "Install it and make sure it is available on PATH.");
+    }
+    failWithDetail(io, "Failed to launch process:", program);
+}
+
+fn runProcessChecked(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, failure_message: []const u8) !void {
+    const result = std.process.run(allocator, io, .{
         .argv = argv,
-    });
+    }) catch |err| return failOnMissingTool(io, err, argv[0]);
     defer {
         allocator.free(result.stdout);
         allocator.free(result.stderr);
     }
 
-    if (result.term.Exited != 0) {
-        printError(failure_message, null) catch {};
-        if (result.stdout.len > 0) printRawError(result.stdout) catch {};
-        if (result.stderr.len > 0) printRawError(result.stderr) catch {};
+    if (result.term != .exited or result.term.exited != 0) {
+        printError(io, failure_message, null) catch {};
+        if (result.stdout.len > 0) printRawError(io, result.stdout) catch {};
+        if (result.stderr.len > 0) printRawError(io, result.stderr) catch {};
         std.process.exit(1);
     }
 }
 
-fn runProcessCheckedOwned(allocator: std.mem.Allocator, argv: []const []const u8, failure_message: []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+fn runProcessCheckedOwned(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, failure_message: []const u8) !void {
+    const result = std.process.run(allocator, io, .{
         .argv = argv,
-    });
+    }) catch |err| return failOnMissingTool(io, err, argv[0]);
     defer {
         allocator.free(result.stdout);
         allocator.free(result.stderr);
     }
 
-    if (result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         if (result.stderr.len > 0) {
-            printRawError(result.stderr) catch {};
+            printRawError(io, result.stderr) catch {};
         } else {
-            printError(failure_message, null) catch {};
+            printError(io, failure_message, null) catch {};
         }
         std.process.exit(1);
     }

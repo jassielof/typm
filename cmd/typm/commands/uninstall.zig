@@ -34,17 +34,17 @@ fn run(ctx: *fangz.ParseContext) !void {
 
     const slash_opt = std.mem.indexOfScalar(u8, spec, '/');
     const slash = slash_opt orelse {
-        support.failWithDetail("Package must be namespace/name (exactly one slash), got:", spec);
+        support.failWithDetail(ctx.io, "Package must be namespace/name (exactly one slash), got:", spec);
     };
     if (slash == 0 or slash + 1 >= spec.len or std.mem.indexOfScalar(u8, spec[slash + 1 ..], '/') != null) {
-        support.failWithDetail("Package must be namespace/name (exactly one slash), got:", spec);
+        support.failWithDetail(ctx.io, "Package must be namespace/name (exactly one slash), got:", spec);
     }
 
     const namespace = spec[0..slash];
     const name = spec[slash + 1 ..];
 
     if (std.mem.indexOf(u8, namespace, "..") != null or std.mem.indexOf(u8, name, "..") != null) {
-        support.failWithDetail("Invalid package spec:", spec);
+        support.failWithDetail(ctx.io, "Invalid package spec:", spec);
     }
 
     const data_dir = try support.typstDataDir(allocator);
@@ -53,12 +53,12 @@ fn run(ctx: *fangz.ParseContext) !void {
     if (version_only) |ver| {
         const target = try std.fs.path.join(allocator, &.{ data_dir, "packages", namespace, name, ver });
         defer allocator.free(target);
-        if (!support.dirExists(target)) {
-            support.failWithDetail("No such installed version:", target);
+        if (!support.dirExists(ctx.io, target)) {
+            support.failWithDetail(ctx.io, "No such installed version:", target);
         }
-        try std.fs.cwd().deleteTree(target);
+        try std.Io.Dir.cwd().deleteTree(ctx.io, target);
         var stdout_buffer: [512]u8 = undefined;
-        var w = std.fs.File.stdout().writer(&stdout_buffer);
+        var w = std.Io.File.stdout().writer(ctx.io, &stdout_buffer);
         try w.interface.print("Removed version {s} of @{s}/{s}.\n", .{ ver, namespace, name });
         try w.interface.flush();
         return;
@@ -66,13 +66,13 @@ fn run(ctx: *fangz.ParseContext) !void {
 
     const package_dir = try std.fs.path.join(allocator, &.{ data_dir, "packages", namespace, name });
     defer allocator.free(package_dir);
-    if (!support.dirExists(package_dir)) {
-        support.failWithDetail("Package is not installed:", spec);
+    if (!support.dirExists(ctx.io, package_dir)) {
+        support.failWithDetail(ctx.io, "Package is not installed:", spec);
     }
-    try std.fs.cwd().deleteTree(package_dir);
+    try std.Io.Dir.cwd().deleteTree(ctx.io, package_dir);
 
     var stdout_buffer: [512]u8 = undefined;
-    var w = std.fs.File.stdout().writer(&stdout_buffer);
+    var w = std.Io.File.stdout().writer(ctx.io, &stdout_buffer);
     try w.interface.print("Removed all versions of @{s}/{s}.\n", .{ namespace, name });
     try w.interface.flush();
 }
