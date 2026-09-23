@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(typm);
 
-    const cli_step = b.step("cli", "Run the CLI");
+    const cli_step = b.step("typm", "Run the TypM CLI");
 
     const run_cli = b.addRunArtifact(typm);
     cli_step.dependOn(&run_cli.step);
