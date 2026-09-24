@@ -1,8 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
 const toml = @import("toml");
 
-const GitSource = @import("GitSource.zig").GitSource;
+const GitSource = @import("GitSource.zig");
 
 /// Set once from `main` before any command runs, since environment access
 /// requires the `Environ` handed to us by `std.process.Init`.
