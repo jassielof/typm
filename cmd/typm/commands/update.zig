@@ -4,7 +4,10 @@ const fangz = @import("fangz");
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
         .name = "update",
-        .description = "Update installed packages. (typm does not track remotes yet — reinstall with typm install.)",
+        .brief = "Update installed packages.",
+        .description =
+        \\typm does not currently record the Git remote or ref a package was installed from, so it has nothing to diff against. To pick up upstream changes, re-run `typm install` with the same source — it overwrites the matching version in place.
+        ,
     });
 
     cmd.setHooks(.{ .run = run });

@@ -6,19 +6,22 @@ const support = @import("../support.zig");
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
         .name = "uninstall",
-        .description = "Remove a package from the Typst data directory (local installs).",
+        .brief = "Remove a package from the Typst data directory (local installs).",
+        .description =
+        \\Deletes an installed package identified as namespace/name (as shown by `typm list`). Pass --version to remove a single version; otherwise every installed version of the package is removed. Only affects local installs, not the Typst Universe cache.
+        ,
     });
 
     try cmd.addPositional(.{
         .name = "package",
-        .description = "Installed package as namespace/name (e.g. gh-user/repo).",
+        .brief = "Installed package as namespace/name (e.g. gh-user/repo).",
         .required = true,
     });
 
     try cmd.addFlag(?[]const u8, .{
         .name = "version",
         .short = 'v',
-        .description = "Remove only this version; omit to remove all installed versions.",
+        .brief = "Remove only this version; omit to remove all installed versions.",
     });
 
     cmd.setHooks(.{ .run = run });

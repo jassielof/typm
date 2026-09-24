@@ -7,12 +7,15 @@ const support = @import("../support.zig");
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
         .name = "install",
-        .description = "Install a package from a Git URL or alias.",
+        .brief = "Install a package from a Git URL or alias.",
+        .description =
+        \\Clones the given Git repository (or resolves a gh/gl/bb alias) into a temporary directory, locates its typst.toml — prompting if more than one is found in a monorepo — validates the manifest, and copies it into Typst's data directory under @<provider>-<owner>/<name>:<version>.
+        ,
     });
 
     try cmd.addPositional(.{
         .name = "git-source",
-        .description = "Git URL or alias (e.g., gh/user/repo[/path]).",
+        .brief = "Git URL or alias (e.g., gh/user/repo[/path]).",
         .required = true,
     });
 

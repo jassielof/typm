@@ -5,29 +5,33 @@ const support = @import("../support.zig");
 
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
-        .name = "pack",
-        .description = "Build a Typst package/template from a typst.toml file to be published or installed.",
+        .name = "bundle",
+        .brief = "Build a Typst package/template from a typst.toml file to be published or installed.",
+        .description =
+        \\Reads the package manifest, validates its name and version, checks the declared Typst compiler requirement, compiles any template listed under [template], and copies the package files (respecting `exclude` patterns) into <output-dir>/<name>/<version>, rewriting local imports to the @<namespace>/<name>:<version> form along the way.
+        ,
     });
 
     try cmd.addAlias("build");
+    try cmd.addAlias("pack");
 
     try cmd.addPositional(.{
         .name = "manifest",
-        .description = "Path to the typst.toml file or its directory.",
+        .brief = "Path to the typst.toml file or its directory.",
         .required = true,
     });
 
     try cmd.addFlag([]const u8, .{
         .name = "output-dir",
         .short = 'o',
-        .description = "The output directory where the built package will be placed.",
+        .brief = "The output directory where the built package will be placed.",
         .default = "out",
     });
 
     try cmd.addFlag([]const u8, .{
         .name = "namespace",
         .short = 'n',
-        .description = "Namespace for the package.",
+        .brief = "Namespace for the package.",
         .default = "preview",
     });
 

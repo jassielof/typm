@@ -11,22 +11,25 @@ const VersionInfo = struct {
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
         .name = "list",
-        .description = "List installed Typst packages.",
+        .brief = "List installed Typst packages.",
+        .description =
+        \\Lists packages from the Typst data directory (installed via `typm install`) and the Typst Universe cache, grouped by namespace, with all installed versions and a description sourced from the newest available typst.toml. Shows both by default.
+        ,
     });
 
     try cmd.addFlag(bool, .{
         .name = "universe",
-        .description = "List only Universe (cache) packages installed from Typst Universe.",
+        .brief = "List only Universe (cache) packages installed from Typst Universe.",
     });
 
     try cmd.addFlag(bool, .{
         .name = "local",
-        .description = "List only packages from the data directory.",
+        .brief = "List only packages from the data directory.",
     });
 
     try cmd.addFlag(?[]const u8, .{
         .name = "namespace",
-        .description = "Filter packages by namespace.",
+        .brief = "Filter packages by namespace.",
     });
 
     cmd.setHooks(.{ .run = run });

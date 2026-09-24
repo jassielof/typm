@@ -7,7 +7,10 @@ const support = @import("../support.zig");
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
         .name = "info",
-        .description = "Show information from an installed or remote Typst package/template.",
+        .brief = "Show information from an installed or remote Typst package/template.",
+        .description =
+        \\Looks up an already-installed package by name first. If none is found, treats the argument as a Git source (URL or alias like gh/user/repo) and clones it to inspect its manifest instead. Prints one block per typst.toml found, including the monorepo path when a repository contains more than one package.
+        ,
     });
 
     cmd.setHelpOnEmptyArgs(true);
@@ -17,7 +20,7 @@ pub fn register(root: *fangz.Command) !void {
 
     try cmd.addPositional(.{
         .name = "package",
-        .description = "Name of the package to display information about",
+        .brief = "Installed package name, or a Git URL/alias to inspect remotely.",
         .required = true,
     });
 }
