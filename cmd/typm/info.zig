@@ -1,8 +1,9 @@
 const std = @import("std");
+
 const fangz = @import("fangz");
 const fugaz = @import("fugaz");
 
-const support = @import("../support.zig");
+const support = @import("support.zig");
 
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{

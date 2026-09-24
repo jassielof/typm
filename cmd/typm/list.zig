@@ -1,7 +1,8 @@
 const std = @import("std");
+
 const fangz = @import("fangz");
 
-const support = @import("../support.zig");
+const support = @import("support.zig");
 
 const VersionInfo = struct {
     version: []const u8,

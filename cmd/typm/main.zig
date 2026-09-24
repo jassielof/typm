@@ -2,8 +2,13 @@ const std = @import("std");
 
 const fangz = @import("fangz");
 
-const root_cmd = @import("commands/root.zig");
+const bundle = @import("bundle.zig");
+const info = @import("info.zig");
+const install = @import("install.zig");
+const list = @import("list.zig");
 const support = @import("support.zig");
+const uninstall = @import("uninstall.zig");
+const update = @import("update.zig");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -23,7 +28,16 @@ pub fn main(init: std.process.Init) !void {
     });
     defer app.deinit();
 
-    try root_cmd.register(app.root());
+    const root = app.root();
+    root.setHelpOnEmptyArgs(true);
+
+    try bundle.register(root);
+    try info.register(root);
+    try install.register(root);
+    try list.register(root);
+    try update.register(root);
+    try uninstall.register(root);
+
     try app.executeProcess(init.minimal.args);
 }
 
