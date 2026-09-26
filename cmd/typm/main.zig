@@ -25,6 +25,8 @@ pub fn main(init: std.process.Init) !void {
         \\
         \\Run `typm help <command>` for details on a specific command.
         ,
+        .author_email = .none,
+        .author_name = .none,
     });
     defer app.deinit();
 
