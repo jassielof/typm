@@ -538,50 +538,47 @@ fn globMatchInner(pattern: []const u8, p_index_start: usize, candidate: []const 
     var p_index = p_index_start;
     var c_index = c_index_start;
 
-    while (true) {
-        if (p_index >= pattern.len) return c_index >= candidate.len;
-
-        switch (pattern[p_index]) {
-            '*' => {
-                if (p_index + 1 < pattern.len and pattern[p_index + 1] == '*') {
-                    var next_pattern = p_index + 2;
-                    while (next_pattern < pattern.len and pattern[next_pattern] == '*') : (next_pattern += 1) {}
-
-                    var next_candidate = c_index;
-                    while (true) {
-                        if (globMatchInner(pattern, next_pattern, candidate, next_candidate)) return true;
-                        if (next_candidate >= candidate.len) return false;
-                        next_candidate += 1;
-                    }
-                }
-
-                var next_candidate = c_index;
-                while (true) {
-                    if (globMatchInner(pattern, p_index + 1, candidate, next_candidate)) return true;
-                    if (next_candidate >= candidate.len) return false;
-                    if (candidate[next_candidate] == '/') return false;
-                    next_candidate += 1;
-                }
-            },
-            '?' => {
-                if (c_index >= candidate.len or candidate[c_index] == '/') return false;
-                p_index += 1;
-                c_index += 1;
-            },
-            '[' => {
-                const end = findClassEnd(pattern, p_index) orelse return false;
-                if (c_index >= candidate.len or candidate[c_index] == '/') return false;
-                if (!matchClass(pattern[p_index .. end + 1], candidate[c_index])) return false;
-                p_index = end + 1;
-                c_index += 1;
-            },
-            else => {
-                if (c_index >= candidate.len or pattern[p_index] != candidate[c_index]) return false;
-                p_index += 1;
-                c_index += 1;
-            },
-        }
+    while (p_index < pattern.len) : (c_index += 1) {
+        if (pattern[p_index] == '*') return matchStar(pattern, p_index, candidate, c_index);
+        p_index += matchToken(pattern, p_index, candidate, c_index) orelse return false;
     }
+
+    return c_index >= candidate.len;
+}
+
+/// A `*` matches within a path segment and `**` also crosses `/`. Tries the rest of the pattern at every position the star could end.
+fn matchStar(pattern: []const u8, star_index: usize, candidate: []const u8, c_index_start: usize) bool {
+    const crosses_separators = star_index + 1 < pattern.len and pattern[star_index + 1] == '*';
+
+    var rest = star_index + 1;
+    while (crosses_separators and rest < pattern.len and pattern[rest] == '*') rest += 1;
+
+    var c_index = c_index_start;
+    while (true) {
+        if (globMatchInner(pattern, rest, candidate, c_index)) return true;
+        if (c_index >= candidate.len) return false;
+        if (!crosses_separators and candidate[c_index] == '/') return false;
+        c_index += 1;
+    }
+}
+
+/// Matches the single non-star token at `pattern[p_index]` against `candidate[c_index]`, returning how many pattern bytes it used or null when it does not match. Every such token consumes exactly one candidate byte.
+fn matchToken(pattern: []const u8, p_index: usize, candidate: []const u8, c_index: usize) ?usize {
+    if (c_index >= candidate.len) return null;
+    const byte = candidate[c_index];
+
+    return switch (pattern[p_index]) {
+        '?' => if (byte == '/') null else 1,
+        '[' => matchClassToken(pattern, p_index, byte),
+        else => if (pattern[p_index] == byte) 1 else null,
+    };
+}
+
+/// Matches a `[...]` class starting at `pattern[p_index]`; a class never matches `/`.
+fn matchClassToken(pattern: []const u8, p_index: usize, byte: u8) ?usize {
+    const end = findClassEnd(pattern, p_index) orelse return null;
+    if (byte == '/' or !matchClass(pattern[p_index .. end + 1], byte)) return null;
+    return end + 1 - p_index;
 }
 
 fn findClassEnd(pattern: []const u8, index: usize) ?usize {
@@ -805,4 +802,46 @@ test "matches version requirements" {
     const version = std.SemanticVersion.parse("0.13.0") catch unreachable;
     try std.testing.expect(matchesVersionReq(">=0.12.0 <0.14.0", version));
     try std.testing.expect(!matchesVersionReq(">=0.14.0", version));
+}
+
+test "glob patterns keep `*` within a path segment and let `**` cross them" {
+    const cases = [_]struct { pattern: []const u8, candidate: []const u8, expected: bool }{
+        .{ .pattern = "*.typ", .candidate = "a.typ", .expected = true },
+        .{ .pattern = "*.typ", .candidate = "dir/a.typ", .expected = false },
+        .{ .pattern = "*/x", .candidate = "a/x", .expected = true },
+        .{ .pattern = "*/x", .candidate = "a/b/x", .expected = false },
+        .{ .pattern = "**/*.typ", .candidate = "dir/sub/a.typ", .expected = true },
+        .{ .pattern = "**", .candidate = "a/b", .expected = true },
+        .{ .pattern = "dir/**", .candidate = "dir/a/b", .expected = true },
+        .{ .pattern = "a**b", .candidate = "a/x/b", .expected = true },
+        .{ .pattern = "*", .candidate = "", .expected = true },
+        .{ .pattern = "a*", .candidate = "a", .expected = true },
+        .{ .pattern = "", .candidate = "", .expected = true },
+        .{ .pattern = "", .candidate = "a", .expected = false },
+        .{ .pattern = "abc", .candidate = "abd", .expected = false },
+        .{ .pattern = "abc", .candidate = "ab", .expected = false },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.expected, globMatch(case.pattern, case.candidate));
+    }
+}
+
+test "glob `?` and character classes match one non-separator byte" {
+    const cases = [_]struct { pattern: []const u8, candidate: []const u8, expected: bool }{
+        .{ .pattern = "a?c", .candidate = "abc", .expected = true },
+        .{ .pattern = "a?c", .candidate = "a/c", .expected = false },
+        .{ .pattern = "a?c", .candidate = "ac", .expected = false },
+        .{ .pattern = "[abc]x", .candidate = "bx", .expected = true },
+        .{ .pattern = "[abc]x", .candidate = "dx", .expected = false },
+        .{ .pattern = "[!abc]x", .candidate = "dx", .expected = true },
+        .{ .pattern = "[!abc]x", .candidate = "ax", .expected = false },
+        .{ .pattern = "[abc", .candidate = "a", .expected = false },
+        .{ .pattern = "[a/]x", .candidate = "/x", .expected = false },
+        .{ .pattern = "[abc]", .candidate = "", .expected = false },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.expected, globMatch(case.pattern, case.candidate));
+    }
 }
