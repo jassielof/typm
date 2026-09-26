@@ -73,12 +73,7 @@ fn run(ctx: *fangz.ParseContext) !void {
     support.validatePackageName(ctx.io, package_name, toml_dir);
     support.checkCompilerVersion(ctx.io, pkg.compiler);
 
-    const final_output_dir = if (output_dir) |dir|
-        try std.fs.path.join(allocator, &.{ dir, package_name, package_version })
-    else blk: {
-        const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .data);
-        break :blk try std.fs.path.join(allocator, &.{ packages_root, namespace, package_name, package_version });
-    };
+    const final_output_dir = try destinationDir(allocator, output_dir, namespace, package_name, package_version);
 
     // Fail before doing any work if the package is there and we were not told to replace it.
     const already_exists = support.dirExists(ctx.io, final_output_dir);
@@ -88,29 +83,10 @@ fn run(ctx: *fangz.ParseContext) !void {
 
     try support.buildTemplate(allocator, ctx.io, toml_dir, package_name, cfg.template);
 
-    var excludes = std.ArrayList([]const u8).empty;
+    var excludes = try excludePatterns(allocator, pkg.exclude, output_dir);
     defer excludes.deinit(allocator);
-    if (pkg.exclude) |items| try excludes.appendSlice(allocator, items);
 
-    // An explicit output directory may sit inside the project, so keep it from being copied into itself.
-    if (output_dir) |dir| {
-        const output_name = std.fs.path.basename(dir);
-        var already_excluded = false;
-        for (excludes.items) |item| {
-            if (std.mem.eql(u8, item, output_name)) {
-                already_excluded = true;
-                break;
-            }
-        }
-        if (!already_excluded) try excludes.append(allocator, output_name);
-    }
-
-    if (already_exists) {
-        if (try isSameOrInside(allocator, ctx.io, toml_dir, final_output_dir)) {
-            support.failWithDetail(ctx.io, "Refusing to overwrite the package's own source:", final_output_dir);
-        }
-        try std.Io.Dir.cwd().deleteTree(ctx.io, final_output_dir);
-    }
+    if (already_exists) try removeExisting(allocator, ctx.io, toml_dir, final_output_dir);
 
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(ctx.io, &stdout_buffer);
@@ -122,6 +98,43 @@ fn run(ctx: *fangz.ParseContext) !void {
 
     try stdout_writer.interface.print("Package '{s}' v{s} built successfully to {s}\n", .{ package_name, package_version, final_output_dir });
     try stdout_writer.interface.flush();
+}
+
+/// Where the bundled package goes: `<output-dir>/<name>/<version>` when a directory was given, otherwise Typst's local package directory as `<namespace>/<name>/<version>`.
+fn destinationDir(allocator: std.mem.Allocator, output_dir: ?[]const u8, namespace: []const u8, package_name: []const u8, package_version: []const u8) ![]u8 {
+    if (output_dir) |dir| return std.fs.path.join(allocator, &.{ dir, package_name, package_version });
+
+    const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .data);
+    return std.fs.path.join(allocator, &.{ packages_root, namespace, package_name, package_version });
+}
+
+/// The manifest's `exclude` patterns, plus the output directory's name when one was given: it may sit inside the project, and must not be copied into itself.
+fn excludePatterns(allocator: std.mem.Allocator, manifest_excludes: ?[]const []const u8, output_dir: ?[]const u8) !std.ArrayList([]const u8) {
+    var excludes = std.ArrayList([]const u8).empty;
+    errdefer excludes.deinit(allocator);
+
+    if (manifest_excludes) |items| try excludes.appendSlice(allocator, items);
+
+    const dir = output_dir orelse return excludes;
+    const output_name = std.fs.path.basename(dir);
+    if (!containsName(excludes.items, output_name)) try excludes.append(allocator, output_name);
+
+    return excludes;
+}
+
+fn containsName(items: []const []const u8, name: []const u8) bool {
+    for (items) |item| {
+        if (std.mem.eql(u8, item, name)) return true;
+    }
+    return false;
+}
+
+/// Clears an existing destination so no stale files survive, unless that would delete the package's own source.
+fn removeExisting(allocator: std.mem.Allocator, io: std.Io, toml_dir: []const u8, final_output_dir: []const u8) !void {
+    if (try isSameOrInside(allocator, io, toml_dir, final_output_dir)) {
+        support.failWithDetail(io, "Refusing to overwrite the package's own source:", final_output_dir);
+    }
+    try std.Io.Dir.cwd().deleteTree(io, final_output_dir);
 }
 
 /// Whether `inner` is `outer` or lives somewhere below it, compared by resolved path so `.` and symlinks cannot hide it.
