@@ -122,41 +122,40 @@ pub fn checkCompilerVersion(io: std.Io, compiler_req: ?[]const u8) void {
     writer.interface.flush() catch {};
 }
 
+const version_operators = [_][]const u8{ ">=", "<=", "==", "!=", ">", "<", "=" };
+
+const SplitRequirement = struct {
+    operator: []const u8,
+    /// The version text after the operator; empty when the version is a separate token.
+    version: []const u8,
+};
+
+/// Splits a leading comparison operator off `token`; a bare version means "at least".
+fn splitOperator(token: []const u8) SplitRequirement {
+    for (version_operators) |candidate| {
+        if (std.mem.startsWith(u8, token, candidate)) return .{ .operator = candidate, .version = token[candidate.len..] };
+    }
+    return .{ .operator = ">=", .version = token };
+}
+
+/// Whether a comparison result (`-1`, `0`, `1` for less, equal, greater) satisfies `operator`.
+fn satisfiesOperator(operator: []const u8, cmp: i8) bool {
+    if (std.mem.eql(u8, operator, ">")) return cmp > 0;
+    if (std.mem.eql(u8, operator, "<")) return cmp < 0;
+    if (std.mem.eql(u8, operator, ">=")) return cmp >= 0;
+    if (std.mem.eql(u8, operator, "<=")) return cmp <= 0;
+    if (std.mem.eql(u8, operator, "!=")) return cmp != 0;
+    return cmp == 0;
+}
+
 pub fn matchesVersionReq(req: []const u8, version: std.SemanticVersion) bool {
     var tokens = std.mem.tokenizeAny(u8, req, " \t\r\n");
     while (tokens.next()) |token| {
-        var operator: []const u8 = ">=";
-        var version_str = token;
-
-        inline for (.{ ">=", "<=", "==", "!=", ">", "<", "=" }) |candidate| {
-            if (std.mem.startsWith(u8, token, candidate)) {
-                operator = candidate;
-                version_str = token[candidate.len..];
-                break;
-            }
-        }
-
-        if (version_str.len == 0) {
-            version_str = tokens.next() orelse return false;
-        }
+        const split = splitOperator(token);
+        const version_str = if (split.version.len == 0) tokens.next() orelse return false else split.version;
 
         const required = std.SemanticVersion.parse(version_str) catch return false;
-        const cmp = compareSemver(version, required);
-
-        const ok = if (std.mem.eql(u8, operator, ">"))
-            cmp > 0
-        else if (std.mem.eql(u8, operator, "<"))
-            cmp < 0
-        else if (std.mem.eql(u8, operator, ">="))
-            cmp >= 0
-        else if (std.mem.eql(u8, operator, "<="))
-            cmp <= 0
-        else if (std.mem.eql(u8, operator, "!="))
-            cmp != 0
-        else
-            cmp == 0;
-
-        if (!ok) return false;
+        if (!satisfiesOperator(split.operator, compareSemver(version, required))) return false;
     }
 
     return true;
@@ -888,5 +887,40 @@ test "shouldExclude honors globs, directory patterns, and existing directory nam
 
     for (cases) |case| {
         try std.testing.expectEqual(case.expected, try shouldExclude(allocator, io, case.rel, case.kind, source, case.patterns));
+    }
+}
+
+test "version requirements support every comparison operator" {
+    const version = std.SemanticVersion.parse("0.13.0") catch unreachable;
+    const cases = [_]struct { req: []const u8, expected: bool }{
+        .{ .req = ">0.12.0", .expected = true },
+        .{ .req = ">0.13.0", .expected = false },
+        .{ .req = "<0.14.0", .expected = true },
+        .{ .req = "<0.13.0", .expected = false },
+        .{ .req = ">=0.13.0", .expected = true },
+        .{ .req = ">=0.13.1", .expected = false },
+        .{ .req = "<=0.13.0", .expected = true },
+        .{ .req = "<=0.12.9", .expected = false },
+        .{ .req = "==0.13.0", .expected = true },
+        .{ .req = "=0.13.0", .expected = true },
+        .{ .req = "=0.13.1", .expected = false },
+        .{ .req = "!=0.13.0", .expected = false },
+        .{ .req = "!=0.12.0", .expected = true },
+        // A bare version means "at least".
+        .{ .req = "0.13.0", .expected = true },
+        .{ .req = "0.14.0", .expected = false },
+        // The operator may be separated from its version.
+        .{ .req = ">= 0.12.0", .expected = true },
+        .{ .req = ">= 0.14.0", .expected = false },
+        // Every part of a requirement has to hold.
+        .{ .req = ">=0.12.0 <0.13.0", .expected = false },
+        .{ .req = ">=0.12.0 !=0.13.0", .expected = false },
+        // Malformed requirements never match.
+        .{ .req = ">=", .expected = false },
+        .{ .req = ">=not-a-version", .expected = false },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.expected, matchesVersionReq(case.req, version));
     }
 }
