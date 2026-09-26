@@ -65,31 +65,44 @@ fn run(ctx: *fangz.ParseContext) !void {
         toml_paths.deinit(allocator);
     }
 
-    const direct_toml = try std.fs.path.join(allocator, &.{ search_dir, "typst.toml" });
-    defer allocator.free(direct_toml);
-
-    if (support.fileExists(ctx.io, direct_toml)) {
-        try toml_paths.append(allocator, try allocator.dupe(u8, direct_toml));
-    } else {
-        try support.collectTypstTomlFiles(allocator, ctx.io, search_dir, &toml_paths);
-    }
-
+    try findManifests(allocator, ctx.io, search_dir, &toml_paths);
     if (toml_paths.items.len == 0) {
         support.failWithDetail(ctx.io, "No typst.toml found in the cloned repository:", search_dir);
     }
 
-    if (toml_paths.items.len > 1) {
+    try printManifests(allocator, ctx.io, temp_dir.path(), toml_paths.items);
+}
+
+/// Collects the manifests of a cloned repository: the one directly in `search_dir`, or else every one below it.
+fn findManifests(allocator: std.mem.Allocator, io: std.Io, search_dir: []const u8, out: *std.ArrayList([]u8)) !void {
+    const direct_toml = try std.fs.path.join(allocator, &.{ search_dir, "typst.toml" });
+    defer allocator.free(direct_toml);
+
+    if (support.fileExists(io, direct_toml)) {
+        try out.append(allocator, try allocator.dupe(u8, direct_toml));
+        return;
+    }
+    try support.collectTypstTomlFiles(allocator, io, search_dir, out);
+}
+
+/// Prints each manifest's package info. A repository with several packages gets a heading, a blank line between entries, and each entry's path relative to `repo_root`.
+fn printManifests(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, toml_paths: []const []u8) !void {
+    const is_monorepo = toml_paths.len > 1;
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    if (is_monorepo) {
         try stdout_writer.interface.print("\nMultiple packages found in this monorepo:\n\n", .{});
         try stdout_writer.interface.flush();
     }
 
-    for (toml_paths.items, 0..) |toml_path, index| {
-        const rel_dir = try support.relativeParentDir(allocator, ctx.io, temp_dir.path(), toml_path);
+    for (toml_paths, 0..) |toml_path, index| {
+        const rel_dir = try support.relativeParentDir(allocator, io, repo_root, toml_path);
         defer allocator.free(rel_dir);
 
-        try printPackageInfoFromToml(allocator, ctx.io, toml_path, if (toml_paths.items.len > 1) rel_dir else null);
+        try printPackageInfoFromToml(allocator, io, toml_path, if (is_monorepo) rel_dir else null);
 
-        if (toml_paths.items.len > 1 and index + 1 < toml_paths.items.len) {
+        if (is_monorepo and index + 1 < toml_paths.len) {
             try stdout_writer.interface.print("\n", .{});
             try stdout_writer.interface.flush();
         }
