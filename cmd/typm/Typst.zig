@@ -39,21 +39,37 @@ fn packageDirFor(allocator: std.mem.Allocator, os: std.Target.Os.Tag, env: *cons
     return std.fs.path.join(allocator, &.{ base, "typst", "packages" });
 }
 
+/// Where the platform keeps one of Typst's package directories: an environment variable that can relocate it (if the platform has one) and the path under the home directory it defaults to.
+const Location = struct {
+    variable: ?[]const u8,
+    home_suffix: []const []const u8,
+};
+
+fn location(os: std.Target.Os.Tag, package: Package) Location {
+    return switch (os) {
+        .windows => switch (package) {
+            .data => .{ .variable = "APPDATA", .home_suffix = &.{ "AppData", "Roaming" } },
+            .cache => .{ .variable = "LOCALAPPDATA", .home_suffix = &.{ "AppData", "Local" } },
+        },
+        .macos => switch (package) {
+            .data => .{ .variable = null, .home_suffix = &.{ "Library", "Application Support" } },
+            .cache => .{ .variable = null, .home_suffix = &.{ "Library", "Caches" } },
+        },
+        else => switch (package) {
+            .data => .{ .variable = "XDG_DATA_HOME", .home_suffix = &.{ ".local", "share" } },
+            .cache => .{ .variable = "XDG_CACHE_HOME", .home_suffix = &.{".cache"} },
+        },
+    };
+}
+
 /// The platform directory Typst places its own `typst/` folder in.
 fn baseDir(allocator: std.mem.Allocator, os: std.Target.Os.Tag, env: *const std.process.Environ.Map, package: Package) Error![]u8 {
-    switch (os) {
-        .windows => {
-            const variable = if (package == .data) "APPDATA" else "LOCALAPPDATA";
-            if (nonEmpty(env.get(variable))) |path| return allocator.dupe(u8, path);
-            return underHome(allocator, os, env, if (package == .data) &.{ "AppData", "Roaming" } else &.{ "AppData", "Local" });
-        },
-        .macos => return underHome(allocator, os, env, if (package == .data) &.{ "Library", "Application Support" } else &.{ "Library", "Caches" }),
-        else => {
-            const variable = if (package == .data) "XDG_DATA_HOME" else "XDG_CACHE_HOME";
-            if (nonEmpty(env.get(variable))) |path| return allocator.dupe(u8, path);
-            return underHome(allocator, os, env, if (package == .data) &.{ ".local", "share" } else &.{".cache"});
-        },
+    const place = location(os, package);
+
+    if (place.variable) |variable| {
+        if (nonEmpty(env.get(variable))) |path| return allocator.dupe(u8, path);
     }
+    return underHome(allocator, os, env, place.home_suffix);
 }
 
 fn underHome(allocator: std.mem.Allocator, os: std.Target.Os.Tag, env: *const std.process.Environ.Map, suffix: []const []const u8) Error![]u8 {
