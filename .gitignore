@@ -2,3 +2,4 @@
 .typm-tmp/
 .zig-cache/
 zig-out/
+docs
