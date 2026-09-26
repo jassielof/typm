@@ -22,8 +22,6 @@ pub fn main(init: std.process.Init) !void {
         .brief = "Install, bundle, and manage Typst packages and templates.",
         .description =
         \\typm resolves packages from Git (GitHub, GitLab, Bitbucket, or a full URL), validates them against their typst.toml manifest, and installs them into Typst's local package data directory so they can be imported by namespace.
-        \\
-        \\Run `typm help <command>` for details on a specific command.
         ,
         .author_email = .none,
         .author_name = .none,
