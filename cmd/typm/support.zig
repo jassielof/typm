@@ -348,10 +348,7 @@ fn copyPackageFilesRecursive(
     entrypoint_name: []const u8,
     full_package_import: []const u8,
 ) !void {
-    const current_source = if (rel_dir.len == 0)
-        try allocator.dupe(u8, source_dir)
-    else
-        try std.fs.path.join(allocator, &.{ source_dir, rel_dir });
+    const current_source = try joinBelow(allocator, source_dir, rel_dir);
     defer allocator.free(current_source);
 
     var dir = try std.Io.Dir.cwd().openDir(io, current_source, .{ .iterate = true });
@@ -359,15 +356,10 @@ fn copyPackageFilesRecursive(
 
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        const rel_path = if (rel_dir.len == 0)
-            try allocator.dupe(u8, entry.name)
-        else
-            try std.fs.path.join(allocator, &.{ rel_dir, entry.name });
+        const rel_path = try childRelPath(allocator, rel_dir, entry.name);
         defer allocator.free(rel_path);
 
-        if (try shouldExclude(allocator, io, rel_path, entry.kind, source_dir, exclude_patterns)) {
-            continue;
-        }
+        if (try shouldExclude(allocator, io, rel_path, entry.kind, source_dir, exclude_patterns)) continue;
 
         const src_path = try std.fs.path.join(allocator, &.{ source_dir, rel_path });
         defer allocator.free(src_path);
@@ -379,32 +371,63 @@ fn copyPackageFilesRecursive(
                 try std.Io.Dir.cwd().createDirPath(io, dst_path);
                 try copyPackageFilesRecursive(allocator, io, source_dir, dest_dir, rel_path, exclude_patterns, entrypoint_name, full_package_import);
             },
-            .file => {
-                if (std.fs.path.dirname(dst_path)) |parent| {
-                    try std.Io.Dir.cwd().createDirPath(io, parent);
-                }
-
-                if (std.mem.eql(u8, entry.name, "typst.toml")) {
-                    const content = try std.Io.Dir.cwd().readFileAlloc(io, src_path, allocator, .limited(1024 * 1024));
-                    defer allocator.free(content);
-
-                    const filtered = try removeSchemaLines(allocator, content);
-                    defer allocator.free(filtered);
-                    try writeFile(io, dst_path, filtered);
-                } else if (std.mem.endsWith(u8, entry.name, ".typ")) {
-                    const content = try std.Io.Dir.cwd().readFileAlloc(io, src_path, allocator, .limited(1024 * 1024));
-                    defer allocator.free(content);
-
-                    const rewritten = try rewriteImports(allocator, content, entrypoint_name, full_package_import);
-                    defer allocator.free(rewritten);
-                    try writeFile(io, dst_path, rewritten);
-                } else {
-                    try std.Io.Dir.copyFile(std.Io.Dir.cwd(), src_path, std.Io.Dir.cwd(), dst_path, io, .{});
-                }
-            },
+            .file => try copyPackageFile(allocator, io, src_path, dst_path, entry.name, entrypoint_name, full_package_import),
             else => {},
         }
     }
+}
+
+/// `base` itself when `rel_dir` is empty, otherwise `base/rel_dir`.
+fn joinBelow(allocator: std.mem.Allocator, base: []const u8, rel_dir: []const u8) ![]u8 {
+    if (rel_dir.len == 0) return allocator.dupe(u8, base);
+    return std.fs.path.join(allocator, &.{ base, rel_dir });
+}
+
+/// The path of directory entry `name` relative to the package root, given the entry's parent `rel_dir` (empty at the root).
+fn childRelPath(allocator: std.mem.Allocator, rel_dir: []const u8, name: []const u8) ![]u8 {
+    if (rel_dir.len == 0) return allocator.dupe(u8, name);
+    return std.fs.path.join(allocator, &.{ rel_dir, name });
+}
+
+/// Copies one package file. The manifest loses its `#:schema` lines and Typst sources get their local imports rewritten; everything else is copied byte for byte.
+fn copyPackageFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    src_path: []const u8,
+    dst_path: []const u8,
+    name: []const u8,
+    entrypoint_name: []const u8,
+    full_package_import: []const u8,
+) !void {
+    if (std.fs.path.dirname(dst_path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
+
+    if (std.mem.eql(u8, name, "typst.toml")) return copyRewritten(allocator, io, src_path, dst_path, .strip_schema, entrypoint_name, full_package_import);
+    if (std.mem.endsWith(u8, name, ".typ")) return copyRewritten(allocator, io, src_path, dst_path, .rewrite_imports, entrypoint_name, full_package_import);
+
+    try std.Io.Dir.copyFile(std.Io.Dir.cwd(), src_path, std.Io.Dir.cwd(), dst_path, io, .{});
+}
+
+const Rewrite = enum { strip_schema, rewrite_imports };
+
+fn copyRewritten(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    src_path: []const u8,
+    dst_path: []const u8,
+    rewrite: Rewrite,
+    entrypoint_name: []const u8,
+    full_package_import: []const u8,
+) !void {
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, src_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(content);
+
+    const output = switch (rewrite) {
+        .strip_schema => try removeSchemaLines(allocator, content),
+        .rewrite_imports => try rewriteImports(allocator, content, entrypoint_name, full_package_import),
+    };
+    defer allocator.free(output);
+
+    try writeFile(io, dst_path, output);
 }
 
 fn removeSchemaLines(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
@@ -923,4 +946,47 @@ test "version requirements support every comparison operator" {
     for (cases) |case| {
         try std.testing.expectEqual(case.expected, matchesVersionReq(case.req, version));
     }
+}
+
+test "copyPackageFiles rewrites manifests and imports, copies the rest, and skips exclusions" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "src/sub");
+    try tmp.dir.createDirPath(io, "src/out");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/typst.toml", .data = "#:schema https://example.com/s.json\n[package]\nname = \"p\"\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/main.typ", .data = "#import \"../main.typ\": *\nplain line\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sub/nested.typ", .data = "#import \"../main.typ\": x\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/data.bin", .data = "\x00\x01raw" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/out/skipped.txt", .data = "build output" });
+
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const source = try std.fs.path.join(allocator, &.{ root, "src" });
+    defer allocator.free(source);
+    const dest = try std.fs.path.join(allocator, &.{ root, "dst" });
+    defer allocator.free(dest);
+
+    try copyPackageFiles(allocator, io, source, dest, &.{"out"}, "local/p", "0.1.0", "main.typ");
+
+    const manifest = try tmp.dir.readFileAlloc(io, "dst/typst.toml", allocator, .limited(4096));
+    defer allocator.free(manifest);
+    try std.testing.expectEqualStrings("[package]\nname = \"p\"\n", manifest);
+
+    const main = try tmp.dir.readFileAlloc(io, "dst/main.typ", allocator, .limited(4096));
+    defer allocator.free(main);
+    try std.testing.expectEqualStrings("#import \"@local/p:0.1.0\": *\nplain line\n", main);
+
+    const nested = try tmp.dir.readFileAlloc(io, "dst/sub/nested.typ", allocator, .limited(4096));
+    defer allocator.free(nested);
+    try std.testing.expectEqualStrings("#import \"@local/p:0.1.0\": x\n", nested);
+
+    const data = try tmp.dir.readFileAlloc(io, "dst/data.bin", allocator, .limited(4096));
+    defer allocator.free(data);
+    try std.testing.expectEqualStrings("\x00\x01raw", data);
+
+    try std.testing.expectError(error.FileNotFound, tmp.dir.readFileAlloc(io, "dst/out/skipped.txt", allocator, .limited(4096)));
 }
