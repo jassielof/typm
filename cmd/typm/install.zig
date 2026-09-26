@@ -33,8 +33,9 @@ fn run(ctx: *fangz.ParseContext) !void {
 
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(ctx.io, &stdout_buffer);
-    try stdout_writer.interface.print("Attempting to install from: {s}\n", .{git_source_input});
-    try stdout_writer.interface.flush();
+    const out = &stdout_writer.interface;
+    try out.print("Attempting to install from: {s}\n", .{git_source_input});
+    try out.flush();
 
     var source = support.parseGitSource(allocator, git_source_input) catch {
         support.failWithDetail(ctx.io, "Invalid Git source URL or alias:", git_source_input);
@@ -45,74 +46,25 @@ fn run(ctx: *fangz.ParseContext) !void {
     var temp_dir = try fugaz.builder().prefix("typst-build-git-").tempDirIn(ctx.io, allocator, ".typm-tmp");
     defer temp_dir.deinit(ctx.io);
 
-    try stdout_writer.interface.print("Cloning {s} into {s}...\n", .{ source.repo_url_for_clone, temp_dir.path() });
-    try stdout_writer.interface.flush();
+    try out.print("Cloning {s} into {s}...\n", .{ source.repo_url_for_clone, temp_dir.path() });
+    try out.flush();
     try support.cloneRepository(allocator, ctx.io, &source, temp_dir.path());
-    try stdout_writer.interface.print("Clone successful.\n", .{});
-    try stdout_writer.interface.flush();
+    try out.print("Clone successful.\n", .{});
+    try out.flush();
 
-    var package_src = if (source.path_in_repo.len == 0)
+    const search_dir = if (source.path_in_repo.len == 0)
         try allocator.dupe(u8, temp_dir.path())
     else
         try std.fs.path.join(allocator, &.{ temp_dir.path(), source.path_in_repo });
-    defer allocator.free(package_src);
 
-    var toml_path = try std.fs.path.join(allocator, &.{ package_src, "typst.toml" });
-    defer allocator.free(toml_path);
+    const manifest = try locateManifest(allocator, ctx.io, out, temp_dir.path(), search_dir);
 
-    if (!support.fileExists(ctx.io, toml_path)) {
-        try stdout_writer.interface.print("typst.toml not found at {s}. Searching recursively in {s}...\n", .{ toml_path, package_src });
-        try stdout_writer.interface.flush();
-
-        var found = std.ArrayList([]u8).empty;
-        defer {
-            for (found.items) |item| allocator.free(item);
-            found.deinit(allocator);
-        }
-
-        try support.collectTypstTomlFiles(allocator, ctx.io, package_src, &found);
-        if (found.items.len == 0) {
-            support.failWithDetail(ctx.io, "No typst.toml found under", package_src);
-        }
-
-        if (found.items.len == 1) {
-            allocator.free(package_src);
-            package_src = try allocator.dupe(u8, std.fs.path.dirname(found.items[0]) orelse temp_dir.path());
-            toml_path = try allocator.dupe(u8, found.items[0]);
-            try stdout_writer.interface.print("Found typst.toml at: {s}\n", .{toml_path});
-            try stdout_writer.interface.flush();
-        } else {
-            try stdout_writer.interface.print("\nMultiple typst.toml files found. Please choose one to install:\n", .{});
-            for (found.items, 0..) |path, index| {
-                const display = try support.relativePath(allocator, ctx.io, temp_dir.path(), path);
-                defer allocator.free(display);
-                try stdout_writer.interface.print("  {d}: {s}\n", .{ index + 1, display });
-            }
-            try stdout_writer.interface.flush();
-
-            const choice = support.promptSelection(ctx.io, found.items.len) catch {
-                support.failWithDetail(ctx.io, "Invalid choice.", "");
-            };
-            if (choice == 0 or choice > found.items.len) {
-                support.failWithDetail(ctx.io, "Invalid choice.", "");
-            }
-
-            allocator.free(package_src);
-            package_src = try allocator.dupe(u8, std.fs.path.dirname(found.items[choice - 1]) orelse temp_dir.path());
-            toml_path = try allocator.dupe(u8, found.items[choice - 1]);
-            try stdout_writer.interface.print("Selected: {s}\n", .{toml_path});
-            try stdout_writer.interface.flush();
-        }
-    }
-
-    const cfg = try support.readPackageFile(allocator, ctx.io, toml_path);
+    const cfg = try support.readPackageFile(allocator, ctx.io, manifest.toml_path);
     const pkg = cfg.package orelse support.PackageSection{};
     support.validatePackageConfig(ctx.io, pkg.name, pkg.version);
 
     const name = pkg.name.?;
     const version = pkg.version.?;
-    const exclude = pkg.exclude orelse &.{};
-    const entrypoint = pkg.entrypoint orelse "main.typ";
     support.checkCompilerVersion(ctx.io, pkg.compiler);
 
     const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .data);
@@ -121,13 +73,63 @@ fn run(ctx: *fangz.ParseContext) !void {
     const final_install_dir = try std.fs.path.join(allocator, &.{ packages_root, namespace, name, version });
     try std.Io.Dir.cwd().createDirPath(ctx.io, final_install_dir);
 
-    try stdout_writer.interface.print("Installing to: {s}\n", .{final_install_dir});
-    try stdout_writer.interface.flush();
+    try out.print("Installing to: {s}\n", .{final_install_dir});
+    try out.flush();
 
     const import_base = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ namespace, name });
-    try support.copyPackageFiles(allocator, ctx.io, package_src, final_install_dir, exclude, import_base, version, entrypoint);
+    try support.copyPackageFiles(allocator, ctx.io, manifest.package_dir, final_install_dir, pkg.exclude orelse &.{}, import_base, version, pkg.entrypoint orelse "main.typ");
 
-    try stdout_writer.interface.print("\nPackage '{s}' v{s} installed successfully.\n", .{ name, version });
-    try stdout_writer.interface.print("You can now import it using: #import \"@{s}/{s}:{s}\": ...\n", .{ namespace, name, version });
-    try stdout_writer.interface.flush();
+    try out.print("\nPackage '{s}' v{s} installed successfully.\n", .{ name, version });
+    try out.print("You can now import it using: #import \"@{s}/{s}:{s}\": ...\n", .{ namespace, name, version });
+    try out.flush();
+}
+
+/// The manifest to install and the directory holding the package it describes.
+const Manifest = struct {
+    package_dir: []const u8,
+    toml_path: []const u8,
+};
+
+/// Finds the manifest to install: the `typst.toml` directly in `search_dir` when there is one, otherwise the single one below it, or the one the user picks when there are several. `repo_root` is only used to show the choices relative to the repository. Expects an arena allocator, since nothing here is freed individually.
+fn locateManifest(allocator: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, repo_root: []const u8, search_dir: []const u8) !Manifest {
+    const direct_toml = try std.fs.path.join(allocator, &.{ search_dir, "typst.toml" });
+    if (support.fileExists(io, direct_toml)) return .{ .package_dir = search_dir, .toml_path = direct_toml };
+
+    try out.print("typst.toml not found at {s}. Searching recursively in {s}...\n", .{ direct_toml, search_dir });
+    try out.flush();
+
+    var found = std.ArrayList([]u8).empty;
+    try support.collectTypstTomlFiles(allocator, io, search_dir, &found);
+    if (found.items.len == 0) {
+        support.failWithDetail(io, "No typst.toml found under", search_dir);
+    }
+
+    const toml_path: []const u8 = if (found.items.len == 1) found.items[0] else try promptForManifest(allocator, io, out, repo_root, found.items);
+    if (found.items.len == 1) {
+        try out.print("Found typst.toml at: {s}\n", .{toml_path});
+    } else {
+        try out.print("Selected: {s}\n", .{toml_path});
+    }
+    try out.flush();
+
+    return .{ .package_dir = std.fs.path.dirname(toml_path) orelse repo_root, .toml_path = toml_path };
+}
+
+/// Lists the manifests found in a monorepo and asks which one to install.
+fn promptForManifest(allocator: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, repo_root: []const u8, found: []const []u8) ![]u8 {
+    try out.print("\nMultiple typst.toml files found. Please choose one to install:\n", .{});
+    for (found, 0..) |path, index| {
+        const display = try support.relativePath(allocator, io, repo_root, path);
+        try out.print("  {d}: {s}\n", .{ index + 1, display });
+    }
+    try out.flush();
+
+    const choice = support.promptSelection(io, found.len) catch {
+        support.failWithDetail(io, "Invalid choice.", "");
+    };
+    if (choice == 0 or choice > found.len) {
+        support.failWithDetail(io, "Invalid choice.", "");
+    }
+
+    return found[choice - 1];
 }
