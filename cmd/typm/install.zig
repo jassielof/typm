@@ -4,6 +4,7 @@ const fangz = @import("fangz");
 const fugaz = @import("fugaz");
 
 const support = @import("support.zig");
+const Typst = @import("Typst.zig");
 
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
@@ -114,10 +115,10 @@ fn run(ctx: *fangz.ParseContext) !void {
     const entrypoint = pkg.entrypoint orelse "main.typ";
     support.checkCompilerVersion(ctx.io, pkg.compiler);
 
-    const data_dir = try support.typstDataDir(allocator);
+    const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .data);
     const provider = support.providerPrefixForHost(source.provider_host);
     const namespace = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ provider, source.user_or_org });
-    const final_install_dir = try std.fs.path.join(allocator, &.{ data_dir, "packages", namespace, name, version });
+    const final_install_dir = try std.fs.path.join(allocator, &.{ packages_root, namespace, name, version });
     try std.Io.Dir.cwd().createDirPath(ctx.io, final_install_dir);
 
     try stdout_writer.interface.print("Installing to: {s}\n", .{final_install_dir});

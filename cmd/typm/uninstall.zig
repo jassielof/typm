@@ -3,6 +3,7 @@ const std = @import("std");
 const fangz = @import("fangz");
 
 const support = @import("support.zig");
+const Typst = @import("Typst.zig");
 
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
@@ -51,11 +52,11 @@ fn run(ctx: *fangz.ParseContext) !void {
         support.failWithDetail(ctx.io, "Invalid package spec:", spec);
     }
 
-    const data_dir = try support.typstDataDir(allocator);
-    defer allocator.free(data_dir);
+    const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .data);
+    defer allocator.free(packages_root);
 
     if (version_only) |ver| {
-        const target = try std.fs.path.join(allocator, &.{ data_dir, "packages", namespace, name, ver });
+        const target = try std.fs.path.join(allocator, &.{ packages_root, namespace, name, ver });
         defer allocator.free(target);
         if (!support.dirExists(ctx.io, target)) {
             support.failWithDetail(ctx.io, "No such installed version:", target);
@@ -68,7 +69,7 @@ fn run(ctx: *fangz.ParseContext) !void {
         return;
     }
 
-    const package_dir = try std.fs.path.join(allocator, &.{ data_dir, "packages", namespace, name });
+    const package_dir = try std.fs.path.join(allocator, &.{ packages_root, namespace, name });
     defer allocator.free(package_dir);
     if (!support.dirExists(ctx.io, package_dir)) {
         support.failWithDetail(ctx.io, "Package is not installed:", spec);

@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const toml = @import("toml");
 
@@ -268,46 +267,6 @@ pub fn relativePath(allocator: std.mem.Allocator, io: std.Io, from: []const u8, 
     var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const cwd_len = try std.Io.Dir.cwd().realPath(io, &cwd_buffer);
     return std.fs.path.relative(allocator, cwd_buffer[0..cwd_len], null, from, to);
-}
-
-pub fn typstDataDir(allocator: std.mem.Allocator) ![]u8 {
-    return switch (builtin.os.tag) {
-        .windows => blk: {
-            const base = getEnvOrHomeFallback(allocator, &.{"APPDATA"}, &.{ "AppData", "Roaming" }) catch |err| break :blk err;
-            defer allocator.free(base);
-            break :blk std.fs.path.join(allocator, &.{ base, "typst" });
-        },
-        .macos => blk: {
-            const base = try getHomeWithSuffix(allocator, &.{ "Library", "Application Support" });
-            defer allocator.free(base);
-            break :blk std.fs.path.join(allocator, &.{ base, "typst" });
-        },
-        else => blk: {
-            const base = getEnvOrHomeFallback(allocator, &.{"XDG_DATA_HOME"}, &.{ ".local", "share" }) catch |err| break :blk err;
-            defer allocator.free(base);
-            break :blk std.fs.path.join(allocator, &.{ base, "typst" });
-        },
-    };
-}
-
-pub fn typstCacheDir(allocator: std.mem.Allocator) ![]u8 {
-    return switch (builtin.os.tag) {
-        .windows => blk: {
-            const base = getEnvOrHomeFallback(allocator, &.{"LOCALAPPDATA"}, &.{ "AppData", "Local" }) catch |err| break :blk err;
-            defer allocator.free(base);
-            break :blk std.fs.path.join(allocator, &.{ base, "typst" });
-        },
-        .macos => blk: {
-            const base = try getHomeWithSuffix(allocator, &.{ "Library", "Caches" });
-            defer allocator.free(base);
-            break :blk std.fs.path.join(allocator, &.{ base, "typst" });
-        },
-        else => blk: {
-            const base = getEnvOrHomeFallback(allocator, &.{"XDG_CACHE_HOME"}, &.{".cache"}) catch |err| break :blk err;
-            defer allocator.free(base);
-            break :blk std.fs.path.join(allocator, &.{ base, "typst" });
-        },
-    };
 }
 
 pub fn fileExists(io: std.Io, path: []const u8) bool {
@@ -783,59 +742,6 @@ fn joinPathSegments(allocator: std.mem.Allocator, segments: []const []const u8) 
 fn trimGitSuffix(segment: []const u8) []const u8 {
     if (std.mem.endsWith(u8, segment, ".git")) return segment[0 .. segment.len - 4];
     return segment;
-}
-
-fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    return process_environ.getAlloc(allocator, name) catch |err| switch (err) {
-        error.EnvironmentVariableMissing => error.EnvironmentVariableNotFound,
-        else => |e| e,
-    };
-}
-
-fn getEnvOrHomeFallback(allocator: std.mem.Allocator, env_names: []const []const u8, home_suffix: []const []const u8) ![]u8 {
-    for (env_names) |name| {
-        if (getEnvVarOwned(allocator, name)) |value| {
-            return value;
-        } else |err| switch (err) {
-            error.EnvironmentVariableNotFound => continue,
-            else => return err,
-        }
-    }
-    return getHomeWithSuffix(allocator, home_suffix);
-}
-
-fn getHomeWithSuffix(allocator: std.mem.Allocator, suffix: []const []const u8) ![]u8 {
-    const home = try getHomeDir(allocator);
-    defer allocator.free(home);
-
-    var parts = std.ArrayList([]const u8).empty;
-    defer parts.deinit(allocator);
-    try parts.append(allocator, home);
-    try parts.appendSlice(allocator, suffix);
-    return std.fs.path.join(allocator, parts.items);
-}
-
-fn getHomeDir(allocator: std.mem.Allocator) ![]u8 {
-    if (builtin.os.tag == .windows) {
-        if (getEnvVarOwned(allocator, "USERPROFILE")) |value| {
-            return value;
-        } else |err| switch (err) {
-            error.EnvironmentVariableNotFound => {},
-            else => return err,
-        }
-
-        if (getEnvVarOwned(allocator, "HOME")) |value| {
-            return value;
-        } else |err| switch (err) {
-            error.EnvironmentVariableNotFound => return error.HomeDirectoryNotFound,
-            else => return err,
-        }
-    }
-
-    return getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => error.HomeDirectoryNotFound,
-        else => err,
-    };
 }
 
 fn failOnMissingTool(io: std.Io, err: std.process.RunError, program: []const u8) noreturn {

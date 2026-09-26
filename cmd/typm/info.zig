@@ -4,6 +4,7 @@ const fangz = @import("fangz");
 const fugaz = @import("fugaz");
 
 const support = @import("support.zig");
+const Typst = @import("Typst.zig");
 
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
@@ -96,10 +97,10 @@ fn run(ctx: *fangz.ParseContext) !void {
 }
 
 fn tryPrintInstalledPackageInfo(allocator: std.mem.Allocator, io: std.Io, package_name: []const u8) !bool {
-    const data_dir = try support.typstDataDir(allocator);
-    defer allocator.free(data_dir);
+    const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .data);
+    defer allocator.free(packages_root);
 
-    const package_dir = try std.fs.path.join(allocator, &.{ data_dir, "packages", package_name });
+    const package_dir = try std.fs.path.join(allocator, &.{ packages_root, package_name });
     defer allocator.free(package_dir);
 
     if (!support.dirExists(io, package_dir)) return false;

@@ -3,6 +3,7 @@ const std = @import("std");
 const fangz = @import("fangz");
 
 const support = @import("support.zig");
+const Typst = @import("Typst.zig");
 
 const VersionInfo = struct {
     version: []const u8,
@@ -47,15 +48,13 @@ fn run(ctx: *fangz.ParseContext) !void {
     const list_all = !want_local and !want_universe;
 
     if (want_local or list_all) {
-        const data_dir = try support.typstDataDir(allocator);
-        const packages_root = try std.fs.path.join(allocator, &.{ data_dir, "packages" });
+        const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .data);
         try printHeading(ctx.io, "Data Packages");
         _ = try listPackagesInRoot(allocator, ctx.io, packages_root, "data", namespace);
     }
 
     if (want_universe or list_all) {
-        const cache_dir = try support.typstCacheDir(allocator);
-        const packages_root = try std.fs.path.join(allocator, &.{ cache_dir, "packages" });
+        const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .cache);
         try printHeading(ctx.io, "Cache Packages");
         _ = try listPackagesInRoot(allocator, ctx.io, packages_root, "cache", namespace);
     }
