@@ -485,31 +485,42 @@ fn shouldExclude(allocator: std.mem.Allocator, io: std.Io, rel_path: []const u8,
         const trimmed_pattern = std.mem.trim(u8, pattern, " \t\r\n");
         if (trimmed_pattern.len == 0) continue;
 
-        const normalized_pattern = try normalizeToPosix(allocator, trimmed_pattern);
-        defer allocator.free(normalized_pattern);
-
-        if (globMatch(normalized_pattern, normalized_rel)) return true;
-
-        if (std.mem.endsWith(u8, normalized_pattern, "/")) {
-            const dir_pattern = normalized_pattern[0 .. normalized_pattern.len - 1];
-            if (std.mem.eql(u8, normalized_rel, dir_pattern) or startsWithDirPrefix(normalized_rel, dir_pattern)) {
-                return true;
-            }
-        }
-
-        if (!containsGlob(normalized_pattern)) {
-            const absolute_candidate = std.fs.path.join(std.heap.page_allocator, &.{ source_dir, trimmed_pattern }) catch continue;
-            defer std.heap.page_allocator.free(absolute_candidate);
-
-            if (entry_kind == .directory and dirExists(io, absolute_candidate)) {
-                if (std.mem.eql(u8, normalized_rel, normalized_pattern) or startsWithDirPrefix(normalized_rel, normalized_pattern)) {
-                    return true;
-                }
-            }
-        }
+        if (try patternExcludes(allocator, io, normalized_rel, entry_kind, source_dir, trimmed_pattern)) return true;
     }
 
     return false;
+}
+
+/// Whether a single, already trimmed pattern excludes `normalized_rel`: as a glob, as a `dir/` pattern, or as the plain name of a directory that exists in `source_dir`.
+fn patternExcludes(allocator: std.mem.Allocator, io: std.Io, normalized_rel: []const u8, entry_kind: std.Io.File.Kind, source_dir: []const u8, pattern: []const u8) !bool {
+    const normalized_pattern = try normalizeToPosix(allocator, pattern);
+    defer allocator.free(normalized_pattern);
+
+    if (globMatch(normalized_pattern, normalized_rel)) return true;
+    if (matchesDirectoryPattern(normalized_rel, normalized_pattern)) return true;
+    if (containsGlob(normalized_pattern)) return false;
+
+    return isExistingDirectory(io, entry_kind, source_dir, pattern) and isSameOrBelow(normalized_rel, normalized_pattern);
+}
+
+/// A pattern with a trailing slash names a directory: it matches the directory itself and everything below it.
+fn matchesDirectoryPattern(rel_path: []const u8, pattern: []const u8) bool {
+    if (!std.mem.endsWith(u8, pattern, "/")) return false;
+    return isSameOrBelow(rel_path, pattern[0 .. pattern.len - 1]);
+}
+
+fn isSameOrBelow(rel_path: []const u8, directory: []const u8) bool {
+    return std.mem.eql(u8, rel_path, directory) or startsWithDirPrefix(rel_path, directory);
+}
+
+/// Whether `entry_kind` is a directory and `pattern`, taken relative to `source_dir`, names a directory that exists.
+fn isExistingDirectory(io: std.Io, entry_kind: std.Io.File.Kind, source_dir: []const u8, pattern: []const u8) bool {
+    if (entry_kind != .directory) return false;
+
+    const absolute_candidate = std.fs.path.join(std.heap.page_allocator, &.{ source_dir, pattern }) catch return false;
+    defer std.heap.page_allocator.free(absolute_candidate);
+
+    return dirExists(io, absolute_candidate);
 }
 
 fn normalizeToPosix(allocator: std.mem.Allocator, path_value: []const u8) ![]u8 {
@@ -843,5 +854,39 @@ test "glob `?` and character classes match one non-separator byte" {
 
     for (cases) |case| {
         try std.testing.expectEqual(case.expected, globMatch(case.pattern, case.candidate));
+    }
+}
+
+test "shouldExclude honors globs, directory patterns, and existing directory names" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "out");
+    const source = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(source);
+
+    const cases = [_]struct { rel: []const u8, kind: std.Io.File.Kind, patterns: []const []const u8, expected: bool }{
+        // Glob patterns.
+        .{ .rel = "a.tmp", .kind = .file, .patterns = &.{"*.tmp"}, .expected = true },
+        .{ .rel = "sub/a.tmp", .kind = .file, .patterns = &.{"*.tmp"}, .expected = false },
+        .{ .rel = "sub/a.tmp", .kind = .file, .patterns = &.{"**/*.tmp"}, .expected = true },
+        // A trailing slash names a directory and everything below it.
+        .{ .rel = "build", .kind = .directory, .patterns = &.{"build/"}, .expected = true },
+        .{ .rel = "build/x.txt", .kind = .file, .patterns = &.{"build/"}, .expected = true },
+        .{ .rel = "builder", .kind = .directory, .patterns = &.{"build/"}, .expected = false },
+        // A plain name matches itself outright; things below it are only excluded when it is a real directory.
+        .{ .rel = "out", .kind = .directory, .patterns = &.{"out"}, .expected = true },
+        .{ .rel = "out/sub", .kind = .directory, .patterns = &.{"out"}, .expected = true },
+        .{ .rel = "ghost/sub", .kind = .directory, .patterns = &.{"ghost"}, .expected = false },
+        .{ .rel = "out/sub", .kind = .file, .patterns = &.{"out"}, .expected = false },
+        // Blank patterns are ignored and any matching pattern is enough.
+        .{ .rel = "a.tmp", .kind = .file, .patterns = &.{ "  ", "", "*.tmp" }, .expected = true },
+        .{ .rel = "a.txt", .kind = .file, .patterns = &.{ "  ", "" }, .expected = false },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.expected, try shouldExclude(allocator, io, case.rel, case.kind, source, case.patterns));
     }
 }
