@@ -67,12 +67,10 @@ fn printHeading(io: std.Io, title: []const u8) !void {
     try stdout_writer.interface.flush();
 }
 
+/// Prints every package under `packages_root_dir` (laid out as `<namespace>/<name>/<version>`), returning how many versions were found.
 fn listPackagesInRoot(allocator: std.mem.Allocator, io: std.Io, packages_root_dir: []const u8, root_type: []const u8, filter_namespace: ?[]const u8) !usize {
     if (!support.dirExists(io, packages_root_dir)) {
-        var stdout_buffer: [512]u8 = undefined;
-        var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
-        try stdout_writer.interface.print("  No packages found in {s} directory ({s} does not exist).\n", .{ root_type, packages_root_dir });
-        try stdout_writer.interface.flush();
+        try printMissingRoot(io, root_type, packages_root_dir);
         return 0;
     }
 
@@ -82,62 +80,87 @@ fn listPackagesInRoot(allocator: std.mem.Allocator, io: std.Io, packages_root_di
 
     var ns_iter = root_dir.iterate();
     while (try ns_iter.next(io)) |ns_entry| {
-        if (ns_entry.kind != .directory) continue;
-        const namespace = ns_entry.name;
-        if (filter_namespace) |expected| {
-            if (!std.mem.eql(u8, namespace, expected)) continue;
-        }
-
-        const namespace_path = try std.fs.path.join(allocator, &.{ packages_root_dir, namespace });
-        defer allocator.free(namespace_path);
-        var namespace_dir = try std.Io.Dir.cwd().openDir(io, namespace_path, .{ .iterate = true });
-        defer namespace_dir.close(io);
-
-        var pkg_iter = namespace_dir.iterate();
-        while (try pkg_iter.next(io)) |pkg_entry| {
-            if (pkg_entry.kind != .directory) continue;
-            const package_name = pkg_entry.name;
-            const package_path = try std.fs.path.join(allocator, &.{ namespace_path, package_name });
-            defer allocator.free(package_path);
-
-            var package_dir = try std.Io.Dir.cwd().openDir(io, package_path, .{ .iterate = true });
-            defer package_dir.close(io);
-
-            var versions = std.ArrayList(VersionInfo).empty;
-            defer versions.deinit(allocator);
-
-            var version_iter = package_dir.iterate();
-            while (try version_iter.next(io)) |version_entry| {
-                if (version_entry.kind != .directory) continue;
-                const version_path = try std.fs.path.join(allocator, &.{ package_path, version_entry.name });
-                defer allocator.free(version_path);
-
-                const description = try getPackageDescription(allocator, io, version_path);
-                try versions.append(allocator, .{
-                    .version = try allocator.dupe(u8, version_entry.name),
-                    .description = description,
-                });
-                count += 1;
-            }
-
-            if (versions.items.len == 0) continue;
-            sortVersionsDescending(versions.items);
-            try printPackageSummary(io, namespace, package_name, versions.items);
-        }
+        if (!isWantedNamespace(ns_entry, filter_namespace)) continue;
+        count += try listNamespace(allocator, io, packages_root_dir, ns_entry.name);
     }
 
-    if (count == 0) {
-        var stdout_buffer: [512]u8 = undefined;
-        var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
-        if (filter_namespace) |namespace| {
-            try stdout_writer.interface.print("  No {s} packages found with namespace '{s}'.\n", .{ root_type, namespace });
-        } else {
-            try stdout_writer.interface.print("  No {s} packages found.\n", .{root_type});
-        }
-        try stdout_writer.interface.flush();
-    }
-
+    if (count == 0) try printNoPackages(io, root_type, filter_namespace);
     return count;
+}
+
+/// A namespace directory is listed unless a namespace filter was given and names another one.
+fn isWantedNamespace(entry: std.Io.Dir.Entry, filter_namespace: ?[]const u8) bool {
+    if (entry.kind != .directory) return false;
+
+    const expected = filter_namespace orelse return true;
+    return std.mem.eql(u8, entry.name, expected);
+}
+
+fn listNamespace(allocator: std.mem.Allocator, io: std.Io, packages_root_dir: []const u8, namespace: []const u8) !usize {
+    const namespace_path = try std.fs.path.join(allocator, &.{ packages_root_dir, namespace });
+    defer allocator.free(namespace_path);
+
+    var namespace_dir = try std.Io.Dir.cwd().openDir(io, namespace_path, .{ .iterate = true });
+    defer namespace_dir.close(io);
+
+    var count: usize = 0;
+    var pkg_iter = namespace_dir.iterate();
+    while (try pkg_iter.next(io)) |pkg_entry| {
+        if (pkg_entry.kind != .directory) continue;
+        count += try listPackage(allocator, io, namespace_path, namespace, pkg_entry.name);
+    }
+    return count;
+}
+
+/// Prints one package with all its installed versions, newest first, and returns how many versions it has.
+fn listPackage(allocator: std.mem.Allocator, io: std.Io, namespace_path: []const u8, namespace: []const u8, package_name: []const u8) !usize {
+    const package_path = try std.fs.path.join(allocator, &.{ namespace_path, package_name });
+    defer allocator.free(package_path);
+
+    var package_dir = try std.Io.Dir.cwd().openDir(io, package_path, .{ .iterate = true });
+    defer package_dir.close(io);
+
+    var versions = std.ArrayList(VersionInfo).empty;
+    defer versions.deinit(allocator);
+
+    var version_iter = package_dir.iterate();
+    while (try version_iter.next(io)) |version_entry| {
+        if (version_entry.kind != .directory) continue;
+        try versions.append(allocator, try readVersionInfo(allocator, io, package_path, version_entry.name));
+    }
+
+    if (versions.items.len == 0) return 0;
+    sortVersionsDescending(versions.items);
+    try printPackageSummary(io, namespace, package_name, versions.items);
+    return versions.items.len;
+}
+
+fn readVersionInfo(allocator: std.mem.Allocator, io: std.Io, package_path: []const u8, version_name: []const u8) !VersionInfo {
+    const version_path = try std.fs.path.join(allocator, &.{ package_path, version_name });
+    defer allocator.free(version_path);
+
+    return .{
+        .version = try allocator.dupe(u8, version_name),
+        .description = try getPackageDescription(allocator, io, version_path),
+    };
+}
+
+fn printMissingRoot(io: std.Io, root_type: []const u8, packages_root_dir: []const u8) !void {
+    var stdout_buffer: [512]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    try stdout_writer.interface.print("  No packages found in {s} directory ({s} does not exist).\n", .{ root_type, packages_root_dir });
+    try stdout_writer.interface.flush();
+}
+
+fn printNoPackages(io: std.Io, root_type: []const u8, filter_namespace: ?[]const u8) !void {
+    var stdout_buffer: [512]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    if (filter_namespace) |namespace| {
+        try stdout_writer.interface.print("  No {s} packages found with namespace '{s}'.\n", .{ root_type, namespace });
+    } else {
+        try stdout_writer.interface.print("  No {s} packages found.\n", .{root_type});
+    }
+    try stdout_writer.interface.flush();
 }
 
 fn getPackageDescription(allocator: std.mem.Allocator, io: std.Io, version_dir: []const u8) ![]const u8 {
