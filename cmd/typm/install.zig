@@ -11,7 +11,7 @@ pub fn register(root: *fangz.Command) !void {
         .name = "install",
         .brief = "Install a package from a Git URL or alias.",
         .description =
-        \\Clones the given Git repository (or resolves a gh/gl/bb alias) into a temporary directory, locates its typst.toml — prompting if more than one is found in a monorepo — validates the manifest, and copies it into Typst's data directory under @<provider>-<owner>/<name>:<version>.
+        \\Clones the given Git repository (or resolves a _gh/gl/bb_ alias) into a temporary directory, locates its typst.toml — prompting if more than one is found in a monorepo — validates the manifest, and copies it into Typst's data directory under `@<provider>-<owner>/<name>:<version>`.
         ,
     });
 
