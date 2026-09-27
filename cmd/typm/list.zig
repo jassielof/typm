@@ -3,7 +3,7 @@ const std = @import("std");
 const fangz = @import("fangz");
 
 const support = @import("support.zig");
-const Typst = @import("typst.zig");
+const typst = @import("typst.zig");
 
 const VersionInfo = struct {
     version: []const u8,
@@ -49,7 +49,7 @@ fn run(ctx: *fangz.ParseContext) !void {
     const list_all = !want_local and !want_universe;
 
     if (want_local or list_all) {
-        const packages_root = try Typst.getPackageDir(
+        const packages_root = try typst.getPackageDir(
             allocator,
             support.process_environ,
             .data,
@@ -65,7 +65,7 @@ fn run(ctx: *fangz.ParseContext) !void {
     }
 
     if (want_universe or list_all) {
-        const packages_root = try Typst.getPackageDir(
+        const packages_root = try typst.getPackageDir(
             allocator,
             support.process_environ,
             .cache,

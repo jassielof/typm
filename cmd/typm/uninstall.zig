@@ -3,7 +3,7 @@ const std = @import("std");
 const fangz = @import("fangz");
 
 const support = @import("support.zig");
-const Typst = @import("typst.zig");
+const typst = @import("typst.zig");
 
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
@@ -82,7 +82,7 @@ fn run(ctx: *fangz.ParseContext) !void {
         );
     }
 
-    const packages_root = try Typst.getPackageDir(
+    const packages_root = try typst.getPackageDir(
         allocator,
         support.process_environ,
         .data,

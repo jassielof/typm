@@ -4,7 +4,7 @@ const fangz = @import("fangz");
 const fugaz = @import("fugaz");
 
 const support = @import("support.zig");
-const Typst = @import("typst.zig");
+const typst = @import("typst.zig");
 
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
@@ -99,7 +99,7 @@ fn run(ctx: *fangz.ParseContext) !void {
 
     support.checkCompilerVersion(ctx.io, pkg.compiler);
 
-    const packages_root = try Typst.getPackageDir(
+    const packages_root = try typst.getPackageDir(
         allocator,
         support.process_environ,
         .data,
