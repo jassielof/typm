@@ -3,7 +3,7 @@ const std = @import("std");
 const fangz = @import("fangz");
 
 const support = @import("support.zig");
-const Typst = @import("Typst.zig");
+const Typst = @import("typst.zig");
 
 const VersionInfo = struct {
     version: []const u8,

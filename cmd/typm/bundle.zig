@@ -1,11 +1,10 @@
 const std = @import("std");
-
 const builtin = @import("builtin");
 
 const fangz = @import("fangz");
 
 const support = @import("support.zig");
-const Typst = @import("Typst.zig");
+const Typst = @import("typst.zig");
 
 pub fn register(root: *fangz.Command) !void {
     const cmd = try root.addSubcommand(.{
