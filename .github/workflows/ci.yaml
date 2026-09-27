@@ -18,37 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Setup Zig
-        uses: jassielof/setup-zig@main
+        uses: jassielof/setup-zig@v1
 
       - name: Formatting
-        run: zig fmt --check build.zig build.zig.zon src
+        run: zig fmt --check build.zig build.zig.zon cmd
 
       - name: Build
         run: zig build --summary all
 
       - name: Tests
         run: zig build tests --summary all
-
-      # - name: Build docs
-      #   run: zig build --summary all docs
-
-      # - name: Upload artifact
-      #   uses: actions/upload-pages-artifact@v4
-      #   with:
-      #     path: zig-out/docs
-
-  # pages:
-  #   environment:
-  #     name: github-pages
-  #     url: ${{ steps.deployment.outputs.page_url }}
-  #   runs-on: ubuntu-latest
-  #   needs: build
-  #   steps:
-  #     - name: Deploy to GitHub Pages
-  #       id: deployment
-  #       uses: actions/deploy-pages@v4
