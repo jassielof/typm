@@ -20,6 +20,7 @@ pub fn register(root: *fangz.Command) !void {
         .run = run,
     });
 
+    // TODO: info should work with local packages.
     try cmd.addPositional(.{
         .name = "package",
         .brief = "Installed package name, or a Git URL/alias to inspect remotely.",
