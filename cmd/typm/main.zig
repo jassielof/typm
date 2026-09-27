@@ -16,16 +16,20 @@ pub fn main(init: std.process.Init) !void {
 
     support.process_environ = init.minimal.environ;
 
-    var app = try fangz.App.init(allocator, io, .{
-        .display_name = "Typst Package Manager",
-        .tagline = "A CLI for managing and bundling Typst packages",
-        .brief = "Install, bundle, and manage Typst packages and templates.",
-        .description =
-        \\typm resolves packages from Git (GitHub, GitLab, Bitbucket, or a full URL), validates them against their typst.toml manifest, and installs them into Typst's local package data directory so they can be imported by namespace.
-        ,
-        .author_email = .none,
-        .author_name = .none,
-    });
+    var app = try fangz.App.init(
+        allocator,
+        io,
+        .{
+            .display_name = "Typst Package Manager",
+            .tagline = "A CLI for managing and bundling Typst packages",
+            .brief = "Install, bundle, and manage Typst packages and templates.",
+            .description =
+            \\typm resolves packages from Git (GitHub, GitLab, Bitbucket, or a full URL), validates them against their typst.toml manifest, and installs them into Typst's local package data directory so they can be imported by namespace.
+            ,
+            .author_email = .none,
+            .author_name = .none,
+        },
+    );
     defer app.deinit();
 
     const root = app.root();
