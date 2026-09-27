@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const fangz = @import("fangz");
 
 pub fn register(root: *fangz.Command) !void {

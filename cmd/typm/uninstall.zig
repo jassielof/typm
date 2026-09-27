@@ -32,48 +32,108 @@ pub fn register(root: *fangz.Command) !void {
 fn run(ctx: *fangz.ParseContext) !void {
     var arena_state = std.heap.ArenaAllocator.init(ctx.allocator);
     defer arena_state.deinit();
+
     const allocator = arena_state.allocator();
 
     const spec = ctx.positional(0) orelse return error.MissingRequiredPositional;
     const version_only = ctx.stringFlag("version");
 
-    const slash_opt = std.mem.indexOfScalar(u8, spec, '/');
+    const slash_opt = std.mem.indexOfScalar(
+        u8,
+        spec,
+        '/',
+    );
     const slash = slash_opt orelse {
-        support.failWithDetail(ctx.io, "Package must be namespace/name (exactly one slash), got:", spec);
+        support.failWithDetail(
+            ctx.io,
+            "Package must be namespace/name (exactly one slash), got:",
+            spec,
+        );
     };
-    if (slash == 0 or slash + 1 >= spec.len or std.mem.indexOfScalar(u8, spec[slash + 1 ..], '/') != null) {
-        support.failWithDetail(ctx.io, "Package must be namespace/name (exactly one slash), got:", spec);
+
+    if (slash == 0 or slash + 1 >= spec.len or std.mem.indexOfScalar(
+        u8,
+        spec[slash + 1 ..],
+        '/',
+    ) != null) {
+        support.failWithDetail(
+            ctx.io,
+            "Package must be namespace/name (exactly one slash), got:",
+            spec,
+        );
     }
 
     const namespace = spec[0..slash];
     const name = spec[slash + 1 ..];
 
-    if (std.mem.indexOf(u8, namespace, "..") != null or std.mem.indexOf(u8, name, "..") != null) {
-        support.failWithDetail(ctx.io, "Invalid package spec:", spec);
+    if (std.mem.indexOf(
+        u8,
+        namespace,
+        "..",
+    ) != null or std.mem.indexOf(
+        u8,
+        name,
+        "..",
+    ) != null) {
+        support.failWithDetail(
+            ctx.io,
+            "Invalid package spec:",
+            spec,
+        );
     }
 
-    const packages_root = try Typst.getPackageDir(allocator, support.process_environ, .data);
+    const packages_root = try Typst.getPackageDir(
+        allocator,
+        support.process_environ,
+        .data,
+    );
     defer allocator.free(packages_root);
 
     if (version_only) |ver| {
-        const target = try std.fs.path.join(allocator, &.{ packages_root, namespace, name, ver });
+        const target = try std.fs.path.join(allocator, &.{
+            packages_root,
+            namespace,
+            name,
+            ver,
+        });
         defer allocator.free(target);
+
         if (!support.dirExists(ctx.io, target)) {
-            support.failWithDetail(ctx.io, "No such installed version:", target);
+            support.failWithDetail(
+                ctx.io,
+                "No such installed version:",
+                target,
+            );
         }
+
         try std.Io.Dir.cwd().deleteTree(ctx.io, target);
         var stdout_buffer: [512]u8 = undefined;
         var w = std.Io.File.stdout().writer(ctx.io, &stdout_buffer);
-        try w.interface.print("Removed version {s} of @{s}/{s}.\n", .{ ver, namespace, name });
+        try w.interface.print("Removed version {s} of @{s}/{s}.\n", .{
+            ver,
+            namespace,
+            name,
+        });
         try w.interface.flush();
+
         return;
     }
 
-    const package_dir = try std.fs.path.join(allocator, &.{ packages_root, namespace, name });
+    const package_dir = try std.fs.path.join(allocator, &.{
+        packages_root,
+        namespace,
+        name,
+    });
     defer allocator.free(package_dir);
+
     if (!support.dirExists(ctx.io, package_dir)) {
-        support.failWithDetail(ctx.io, "Package is not installed:", spec);
+        support.failWithDetail(
+            ctx.io,
+            "Package is not installed:",
+            spec,
+        );
     }
+
     try std.Io.Dir.cwd().deleteTree(ctx.io, package_dir);
 
     var stdout_buffer: [512]u8 = undefined;

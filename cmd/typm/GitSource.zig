@@ -8,7 +8,10 @@ user_or_org: []u8,
 
 pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
     allocator.free(self.repo_url_for_clone);
-    if (self.git_ref) |git_ref| allocator.free(git_ref);
+    if (self.git_ref) |git_ref| {
+        allocator.free(git_ref);
+    }
+
     allocator.free(self.path_in_repo);
     allocator.free(self.provider_host);
     allocator.free(self.user_or_org);
