@@ -32,4 +32,4 @@ jobs:
         run: zig build --summary all
 
       - name: Tests
-        run: zig build tests --summary all
+        run: zig build test --summary all
