@@ -12,20 +12,17 @@ pub fn register(root: *fangz.Command) !void {
         .name = "bundle",
         .brief = "Build a Typst package/template from a typst.toml file to be published or installed.",
         .description =
-        \\Reads the package manifest, validates its name and version, checks the declared Typst compiler requirement, compiles any template listed under [template], and copies the package files (respecting `exclude` patterns) into `<output-dir>/<name>/<version>`, rewriting local imports to the `@<namespace>/<name>:<version>` form along the way.
+        \\Reads the package manifest, validates its name and version, checks the declared Typst compiler requirement, compiles any template listed under `[template]`, and copies the package files (respecting `exclude` patterns) into `<output-dir>/<name>/<version>`, rewriting local imports to the `@<namespace>/<name>:<version>` form along the way.
         \\
-        \\Without --output-dir the package goes straight into Typst's local package directory as `<namespace>/<name>/<version>`, so it can be imported right away. An existing package is never overwritten unless --force is given.
+        \\Without --output-dir the package goes straight into Typst's local package directory as `<namespace>/<name>/<version>`, so it can be imported right away. An existing package is never overwritten unless `--force` is given.
         ,
     });
-    cmd.help_on_empty_args = true;
-
     try cmd.addAlias("build");
     try cmd.addAlias("pack");
 
     try cmd.addPositional(.{
         .name = "manifest",
-        .brief = "Path to the typst.toml file or its directory.",
-        .required = true,
+        .brief = "Path to the typst.toml file or its directory. Defaults to the current directory.",
     });
 
     try cmd.addFlag(?[]const u8, .{
@@ -56,7 +53,7 @@ fn run(ctx: *fangz.ParseContext) !void {
 
     const allocator = arena_state.allocator();
 
-    const manifest = ctx.positional(0) orelse return error.MissingRequiredPositional;
+    const manifest = manifestInput(ctx.positional(0));
     const output_dir = ctx.stringFlag("output-dir");
     const namespace = ctx.stringFlag("namespace") orelse "local";
     const force = ctx.boolFlag("force") orelse false;
@@ -66,7 +63,11 @@ fn run(ctx: *fangz.ParseContext) !void {
         ctx.io,
         manifest,
     );
-    const toml_dir = std.fs.path.dirname(toml_path) orelse ".";
+    const toml_dir = try resolvePackageDir(
+        allocator,
+        ctx.io,
+        std.fs.path.dirname(toml_path) orelse ".",
+    );
 
     const cfg = try support.readPackageFile(
         allocator,
@@ -158,6 +159,20 @@ fn run(ctx: *fangz.ParseContext) !void {
         final_output_dir,
     });
     try stdout_writer.interface.flush();
+}
+
+fn manifestInput(positional: ?[]const u8) []const u8 {
+    return positional orelse ".";
+}
+
+/// Resolves `.` and other relative forms before package-name validation so the
+/// directory name is the actual package folder rather than a lexical `.`.
+fn resolvePackageDir(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) ![:0]u8 {
+    return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator);
 }
 
 /// Where the bundled package goes: `<output-dir>/<name>/<version>` when a directory was given, otherwise Typst's local package directory as `<namespace>/<name>/<version>`.
@@ -294,4 +309,47 @@ test "a path is inside another only at a component boundary" {
     try std.testing.expect(!pathIsSameOrInside("a" ++ sep ++ "bc", "a" ++ sep ++ "b"));
     try std.testing.expect(!pathIsSameOrInside("a", "a" ++ sep ++ "b"));
     try std.testing.expect(!pathIsSameOrInside("x" ++ sep ++ "b", "a" ++ sep ++ "b"));
+}
+
+test "bundle defaults an omitted manifest to the current directory" {
+    try std.testing.expectEqualStrings(".", manifestInput(null));
+    try std.testing.expectEqualStrings("package", manifestInput("package"));
+}
+
+test "bundle resolves the package folder before validating its name" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "example-package");
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const relative_form = try std.fs.path.join(allocator, &.{ root, "example-package", "." });
+    defer allocator.free(relative_form);
+
+    const package_dir = try resolvePackageDir(allocator, io, relative_form);
+    defer allocator.free(package_dir);
+
+    try std.testing.expectEqualStrings("example-package", std.fs.path.basename(package_dir));
+}
+
+test "bundle accepts an omitted manifest without showing help" {
+    var app = try fangz.App.init(
+        std.testing.allocator,
+        std.testing.io,
+        .{
+            .display_name = "typm",
+            .author_email = .none,
+            .author_name = .none,
+        },
+    );
+    defer app.deinit();
+
+    try register(app.root());
+
+    const ctx = try app.parseFrom(&.{"bundle"});
+    try std.testing.expect(!ctx.help_requested);
+    try std.testing.expect(ctx.positional(0) == null);
 }
