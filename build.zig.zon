@@ -6,7 +6,7 @@
     .dependencies = .{
         .fangz = .{ .path = "dependencies/fangz" },
         .toml = .{ .path = "dependencies/toml" },
-        .fugaz = .{ .path = "modules/fugaz" },
+        .fugaz = .{ .path = "dependencies/fugaz" },
     },
     .paths = .{
         "build.zig",
