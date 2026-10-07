@@ -52,9 +52,7 @@ pub fn build(b: *std.Build) void {
 
     run_cli.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cli.addArgs(args);
-    }
+    run_cli.addPassthruArgs();
 
     const tests_step = b.step("test", "Run the test suite");
 

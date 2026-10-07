@@ -2,7 +2,7 @@
     .name = .typm,
     .version = "0.1.0",
     .fingerprint = 0x8205df1be9995f06,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .fangz = .{ .path = "dependencies/fangz" },
         .toml = .{ .path = "dependencies/toml" },
