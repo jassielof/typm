@@ -1,9 +1,9 @@
-[submodule "modules/fugaz"]
-	path = modules/fugaz
-	url = https://github.com/jassielof/fugaz.git
 [submodule "dependencies/fangz"]
 	path = dependencies/fangz
 	url = https://github.com/jassielof/fangz
 [submodule "dependencies/toml"]
 	path = dependencies/toml
 	url = https://github.com/jassielof/toml-zig
+[submodule "dependencies/fugaz"]
+	path = dependencies/fugaz
+	url = https://github.com/jassielof/fugaz
