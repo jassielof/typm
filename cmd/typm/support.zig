@@ -99,27 +99,47 @@ pub fn validatePackageConfig(
     }
 }
 
+pub fn isValidPackageName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+
+    switch (name[0]) {
+        'a'...'z', '0'...'9' => {},
+        else => return false,
+    }
+    switch (name[name.len - 1]) {
+        'a'...'z', '0'...'9' => {},
+        else => return false,
+    }
+
+    var prev_was_separator = false;
+    for (name) |c| {
+        switch (c) {
+            'a'...'z', '0'...'9' => {
+                prev_was_separator = false;
+            },
+            '-', '_' => {
+                if (prev_was_separator) return false;
+                prev_was_separator = true;
+            },
+            else => return false,
+        }
+    }
+
+    return true;
+}
+
 pub fn validatePackageName(
     io: std.Io,
     package_name: []const u8,
     toml_dir: []const u8,
 ) void {
-    const dir_name = std.fs.path.basename(toml_dir);
-    if (!std.mem.eql(
-        u8,
-        package_name,
-        dir_name,
-    )) {
-        var buffer: [4096]u8 = undefined;
-        const message = std.fmt.bufPrint(
-            &buffer,
-            "Package name '{s}' does not match parent directory name '{s}'",
-            .{ package_name, dir_name },
-        ) catch "Package name does not match parent directory name";
+    _ = toml_dir;
+    if (!isValidPackageName(package_name)) {
         failWithDetail(
             io,
-            message,
-            "",
+            "Package name must be a valid identifier (lowercase alphanumeric characters separated by single hyphens or underscores):",
+            package_name,
         );
     }
 }
@@ -301,11 +321,10 @@ pub fn buildTemplate(
     package_name: []const u8,
     template: ?TemplateSection,
 ) !void {
+    _ = package_name;
     const template_section = template orelse return;
     const template_path = template_section.path orelse return;
     const template_entrypoint = template_section.entrypoint orelse return;
-
-    const project_root = std.fs.path.dirname(toml_dir) orelse ".";
 
     var stdout_buffer: [512]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
@@ -313,8 +332,7 @@ pub fn buildTemplate(
     try stdout_writer.interface.flush();
 
     const input_path = try std.fs.path.join(allocator, &.{
-        project_root,
-        package_name,
+        toml_dir,
         template_path,
         template_entrypoint,
     });
@@ -327,7 +345,7 @@ pub fn buildTemplate(
             "typst",
             "compile",
             "--root",
-            project_root,
+            toml_dir,
             input_path,
         },
         "Template compilation failed.",
@@ -338,8 +356,7 @@ pub fn buildTemplate(
         try stdout_writer.interface.flush();
 
         const output_path = try std.fs.path.join(allocator, &.{
-            project_root,
-            package_name,
+            toml_dir,
             thumbnail_path,
         });
         defer allocator.free(output_path);
@@ -351,7 +368,7 @@ pub fn buildTemplate(
                 "typst",
                 "compile",
                 "--root",
-                project_root,
+                toml_dir,
                 "--pages",
                 "1",
                 input_path,
@@ -1883,4 +1900,39 @@ test "copyPackageFiles rewrites manifests and imports, copies the rest, and skip
         allocator,
         .limited(4096),
     ));
+}
+
+test "isValidPackageName accepts valid package identifiers and rejects invalid ones" {
+    try std.testing.expect(isValidPackageName("p"));
+    try std.testing.expect(isValidPackageName("example-package"));
+    try std.testing.expect(isValidPackageName("my_pkg"));
+    try std.testing.expect(isValidPackageName("typst123"));
+    try std.testing.expect(isValidPackageName("foo-123-bar"));
+    try std.testing.expect(isValidPackageName("123-foo"));
+
+    try std.testing.expect(!isValidPackageName(""));
+    try std.testing.expect(!isValidPackageName("."));
+    try std.testing.expect(!isValidPackageName(".."));
+    try std.testing.expect(!isValidPackageName("../foo"));
+    try std.testing.expect(!isValidPackageName("-pkg"));
+    try std.testing.expect(!isValidPackageName("pkg-"));
+    try std.testing.expect(!isValidPackageName("_pkg"));
+    try std.testing.expect(!isValidPackageName("pkg_"));
+    try std.testing.expect(!isValidPackageName("foo--bar"));
+    try std.testing.expect(!isValidPackageName("foo__bar"));
+    try std.testing.expect(!isValidPackageName("foo-_bar"));
+    try std.testing.expect(!isValidPackageName("foo/bar"));
+    try std.testing.expect(!isValidPackageName("foo\\bar"));
+    try std.testing.expect(!isValidPackageName("foo:bar"));
+    try std.testing.expect(!isValidPackageName("foo@bar"));
+    try std.testing.expect(!isValidPackageName("foo bar"));
+    try std.testing.expect(!isValidPackageName("MyPackage"));
+}
+
+test "validatePackageName allows mismatch between package name and manifest parent directory" {
+    validatePackageName(
+        std.testing.io,
+        "my-cool-package",
+        "some/arbitrary/directory-name",
+    );
 }
