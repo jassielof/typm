@@ -986,6 +986,11 @@ fn rewriteImportLine(
 }
 
 fn shouldRewriteImport(target: []const u8, entrypoint_name: []const u8) bool {
+    // Typst resolves a leading slash against the project root.
+    if (std.mem.startsWith(u8, target, "/")) {
+        return std.mem.eql(u8, target[1..], entrypoint_name);
+    }
+
     var rest = target;
     var saw_parent = false;
     while (std.mem.startsWith(
