@@ -1017,6 +1017,8 @@ fn shouldExclude(
     source_dir: []const u8,
     patterns: []const []const u8,
 ) !bool {
+    _ = io;
+    _ = source_dir;
     const normalized_rel = try normalizeToPosix(allocator, rel_path);
     defer allocator.free(normalized_rel);
 
@@ -1026,16 +1028,14 @@ fn shouldExclude(
             pattern,
             " \t\r\n",
         );
-        if (trimmed_pattern.len == 0) {
+        if (trimmed_pattern.len == 0 or trimmed_pattern[0] == '#') {
             continue;
         }
 
         if (try patternExcludes(
             allocator,
-            io,
             normalized_rel,
             entry_kind,
-            source_dir,
             trimmed_pattern,
         )) return true;
     }
@@ -1043,72 +1043,86 @@ fn shouldExclude(
     return false;
 }
 
-/// Whether a single, already trimmed pattern excludes `normalized_rel`: as a glob, as a `dir/` pattern, or as the plain name of a directory that exists in `source_dir`.
+/// Whether a single pattern excludes `normalized_rel` using .gitignore semantics.
 fn patternExcludes(
     allocator: std.mem.Allocator,
-    io: std.Io,
     normalized_rel: []const u8,
     entry_kind: std.Io.File.Kind,
-    source_dir: []const u8,
     pattern: []const u8,
 ) !bool {
     const normalized_pattern = try normalizeToPosix(allocator, pattern);
     defer allocator.free(normalized_pattern);
 
-    if (globMatch(normalized_pattern, normalized_rel)) {
-        return true;
-    }
-
-    if (matchesDirectoryPattern(normalized_rel, normalized_pattern)) {
-        return true;
-    }
-
-    if (containsGlob(normalized_pattern)) {
-        return false;
-    }
-
-    return isExistingDirectory(
-        io,
+    return pathMatchesPattern(
+        normalized_rel,
         entry_kind,
-        source_dir,
-        pattern,
-    ) and isSameOrBelow(normalized_rel, normalized_pattern);
+        normalized_pattern,
+    );
 }
 
-/// A pattern with a trailing slash names a directory: it matches the directory itself and everything below it.
-fn matchesDirectoryPattern(rel_path: []const u8, pattern: []const u8) bool {
-    if (!std.mem.endsWith(
-        u8,
-        pattern,
-        "/",
-    )) return false;
-
-    return isSameOrBelow(rel_path, pattern[0 .. pattern.len - 1]);
-}
-
-fn isSameOrBelow(rel_path: []const u8, directory: []const u8) bool {
-    return std.mem.eql(
-        u8,
-        rel_path,
-        directory,
-    ) or startsWithDirPrefix(rel_path, directory);
-}
-
-/// Whether `entry_kind` is a directory and `pattern`, taken relative to `source_dir`, names a directory that exists.
-fn isExistingDirectory(
-    io: std.Io,
+/// Evaluates whether `normalized_rel` matches `pattern` using .gitignore semantics:
+/// - A pattern ending in `/` only matches directories (and files inside them).
+/// - A pattern with a leading or internal `/` is anchored to the root.
+/// - A pattern without a leading or internal `/` matches recursively at any depth.
+fn pathMatchesPattern(
+    normalized_rel: []const u8,
     entry_kind: std.Io.File.Kind,
-    source_dir: []const u8,
     pattern: []const u8,
 ) bool {
-    if (entry_kind != .directory) {
+    if (pattern.len == 0) return false;
+
+    const is_dir_only = std.mem.endsWith(u8, pattern, "/");
+    const pat_no_trailing = if (is_dir_only) pattern[0 .. pattern.len - 1] else pattern;
+    if (pat_no_trailing.len == 0) return false;
+
+    const is_anchored = std.mem.indexOfScalar(u8, pat_no_trailing, '/') != null;
+    const pat = if (std.mem.startsWith(u8, pat_no_trailing, "/"))
+        pat_no_trailing[1..]
+    else
+        pat_no_trailing;
+
+    if (is_anchored) {
+        // Anchored pattern: matches relative to the root.
+        if (globMatch(pat, normalized_rel)) {
+            if (!is_dir_only or entry_kind == .directory) return true;
+        }
+
+        // Also matches if any parent directory of normalized_rel matches the pattern.
+        var idx: usize = 0;
+        while (idx < normalized_rel.len) : (idx += 1) {
+            if (normalized_rel[idx] == '/') {
+                const parent_prefix = normalized_rel[0..idx];
+                if (globMatch(pat, parent_prefix)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    } else {
+        // Unanchored pattern: matches recursively at any directory level.
+        // 1. Matches if the basename matches pat.
+        const basename = if (std.mem.lastIndexOfScalar(u8, normalized_rel, '/')) |last_slash|
+            normalized_rel[last_slash + 1 ..]
+        else
+            normalized_rel;
+
+        if (globMatch(pat, basename)) {
+            if (!is_dir_only or entry_kind == .directory) return true;
+        }
+
+        // 2. Matches if any parent directory segment matches pat.
+        var it = std.mem.splitScalar(u8, normalized_rel, '/');
+        while (it.next()) |segment| {
+            if (it.rest().len > 0) {
+                if (globMatch(pat, segment)) {
+                    return true;
+                }
+            }
+        }
+
         return false;
     }
-
-    const absolute_candidate = std.fs.path.join(std.heap.page_allocator, &.{ source_dir, pattern }) catch return false;
-    defer std.heap.page_allocator.free(absolute_candidate);
-
-    return dirExists(io, absolute_candidate);
 }
 
 fn normalizeToPosix(allocator: std.mem.Allocator, path_value: []const u8) ![]u8 {
@@ -1122,22 +1136,6 @@ fn normalizeToPosix(allocator: std.mem.Allocator, path_value: []const u8) ![]u8 
     }
 
     return normalized;
-}
-
-fn containsGlob(pattern: []const u8) bool {
-    return std.mem.indexOfAny(
-        u8,
-        pattern,
-        "*?[",
-    ) != null;
-}
-
-fn startsWithDirPrefix(rel_path: []const u8, pattern: []const u8) bool {
-    return rel_path.len > pattern.len and std.mem.startsWith(
-        u8,
-        rel_path,
-        pattern,
-    ) and rel_path[pattern.len] == '/';
 }
 
 fn globMatch(pattern: []const u8, candidate: []const u8) bool {
@@ -1751,26 +1749,43 @@ test "shouldExclude honors globs, directory patterns, and existing directory nam
     defer allocator.free(source);
 
     const cases = [_]struct { rel: []const u8, kind: std.Io.File.Kind, patterns: []const []const u8, expected: bool }{
-        // Glob patterns.
+        // Glob patterns (recursive by default like .gitignore).
         .{ .rel = "a.tmp", .kind = .file, .patterns = &.{"*.tmp"}, .expected = true },
-        .{ .rel = "sub/a.tmp", .kind = .file, .patterns = &.{"*.tmp"}, .expected = false },
+        .{ .rel = "sub/a.tmp", .kind = .file, .patterns = &.{"*.tmp"}, .expected = true },
+        .{ .rel = "sub/nested/a.tmp", .kind = .file, .patterns = &.{"*.tmp"}, .expected = true },
+        .{ .rel = "sub/a.txt", .kind = .file, .patterns = &.{"*.tmp"}, .expected = false },
+        // Anchored patterns with a leading slash match only at the root.
+        .{ .rel = "a.tmp", .kind = .file, .patterns = &.{"/*.tmp"}, .expected = true },
+        .{ .rel = "sub/a.tmp", .kind = .file, .patterns = &.{"/*.tmp"}, .expected = false },
+        // Patterns with an internal slash are anchored to the root.
+        .{ .rel = "sub/a.tmp", .kind = .file, .patterns = &.{"sub/*.tmp"}, .expected = true },
+        .{ .rel = "nested/sub/a.tmp", .kind = .file, .patterns = &.{"sub/*.tmp"}, .expected = false },
         .{ .rel = "sub/a.tmp", .kind = .file, .patterns = &.{"**/*.tmp"}, .expected = true },
         // A trailing slash names a directory and everything below it.
         .{ .rel = "build", .kind = .directory, .patterns = &.{"build/"}, .expected = true },
         .{ .rel = "build/x.txt", .kind = .file, .patterns = &.{"build/"}, .expected = true },
+        .{ .rel = "sub/build", .kind = .directory, .patterns = &.{"build/"}, .expected = true },
+        .{ .rel = "sub/build/x.txt", .kind = .file, .patterns = &.{"build/"}, .expected = true },
         .{ .rel = "builder", .kind = .directory, .patterns = &.{"build/"}, .expected = false },
-        // A plain name matches itself outright; things below it are only excluded when it is a real directory.
+        .{ .rel = "build", .kind = .file, .patterns = &.{"build/"}, .expected = false },
+        // Anchored directory pattern.
+        .{ .rel = "build", .kind = .directory, .patterns = &.{"/build/"}, .expected = true },
+        .{ .rel = "build/x.txt", .kind = .file, .patterns = &.{"/build/"}, .expected = true },
+        .{ .rel = "sub/build", .kind = .directory, .patterns = &.{"/build/"}, .expected = false },
+        // A plain name without slash matches file or directory anywhere.
         .{ .rel = "out", .kind = .directory, .patterns = &.{"out"}, .expected = true },
         .{ .rel = "out/sub", .kind = .directory, .patterns = &.{"out"}, .expected = true },
-        .{ .rel = "ghost/sub", .kind = .directory, .patterns = &.{"ghost"}, .expected = false },
-        .{ .rel = "out/sub", .kind = .file, .patterns = &.{"out"}, .expected = false },
-        // Blank patterns are ignored and any matching pattern is enough.
+        .{ .rel = "out/sub", .kind = .file, .patterns = &.{"out"}, .expected = true },
+        .{ .rel = "sub/out", .kind = .directory, .patterns = &.{"out"}, .expected = true },
+        .{ .rel = "sub/out/file.txt", .kind = .file, .patterns = &.{"out"}, .expected = true },
+        // Blank patterns and comments are ignored and any matching pattern is enough.
         .{ .rel = "a.tmp", .kind = .file, .patterns = &.{
             "  ",
             "",
+            "# comment",
             "*.tmp",
         }, .expected = true },
-        .{ .rel = "a.txt", .kind = .file, .patterns = &.{ "  ", "" }, .expected = false },
+        .{ .rel = "a.txt", .kind = .file, .patterns = &.{ "  ", "", "# comment" }, .expected = false },
     };
 
     for (cases) |case| {
@@ -1783,6 +1798,29 @@ test "shouldExclude honors globs, directory patterns, and existing directory nam
             case.patterns,
         ));
     }
+}
+
+test "exclude globs match recursively like gitignore (e.g. *.pdf matches subdirectories)" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const patterns = [_][]const u8{"*.pdf"};
+
+    // Root-level matches
+    try std.testing.expect(try shouldExclude(allocator, io, "doc.pdf", .file, ".", &patterns));
+
+    // Subdirectory matches recursively
+    try std.testing.expect(try shouldExclude(allocator, io, "sub/doc.pdf", .file, ".", &patterns));
+    try std.testing.expect(try shouldExclude(allocator, io, "nested/deeply/manual.pdf", .file, ".", &patterns));
+
+    // Non-matching extensions do not match
+    try std.testing.expect(!try shouldExclude(allocator, io, "doc.typ", .file, ".", &patterns));
+    try std.testing.expect(!try shouldExclude(allocator, io, "sub/doc.typ", .file, ".", &patterns));
+
+    // Anchored pattern only matches at root
+    const anchored = [_][]const u8{"/*.pdf"};
+    try std.testing.expect(try shouldExclude(allocator, io, "doc.pdf", .file, ".", &anchored));
+    try std.testing.expect(!try shouldExclude(allocator, io, "sub/doc.pdf", .file, ".", &anchored));
 }
 
 test "version requirements support every comparison operator" {
